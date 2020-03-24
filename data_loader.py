@@ -184,9 +184,6 @@ def generate_data(train_file, valid_file, test_file, relation_file, glove_file, 
                                                        embedding_size)
 
     relation_numbers = transform_relations(cleaned_relations, vocabulary)
-    train_data = transform_questions(train_data_list, vocabulary)
-    test_data = transform_questions(test_data_list, vocabulary)
-    valid_data = transform_questions(valid_data_list, vocabulary)
 
     return train_data_list, train_data_dict, test_data_list, test_data_dict, valid_data_list, valid_data_dict, \
            relation_numbers, vocabulary, embedding
@@ -201,7 +198,7 @@ def random_split_relation(task_num, relation_dict):
 
     return rel2label
 
-def split_data(data, rel2cluster, task_num, instance_num=-1):  # -1 means all
+def split_data(data, vocabulary, rel2cluster, task_num, instance_num=-1):  # -1 means all
     separated_data = [None] * task_num
     for rel, items in data.items():
         rel_culter = rel2cluster[rel]
@@ -215,6 +212,8 @@ def split_data(data, rel2cluster, task_num, instance_num=-1):  # -1 means all
         else:
             separated_data[rel_culter].extend(selected_samples)
 
+    for i in range(len(separated_data)):
+        separated_data[i] = transform_questions(separated_data[i], vocabulary)
     return separated_data
 
 def split_relation(relation):
@@ -284,8 +283,8 @@ def load_data(train_file, valid_file, test_file, relation_file, glove_file, embe
     else:
         raise Exception('task arrangement method %s not implement' % task_arrange)
 
-    split_train_data = split_data(train_data_dict, rel2cluster, task_num, instance_num)
-    split_test_data = split_data(test_data_dict, rel2cluster, task_num)
-    split_valid_data = split_data(valid_data_dict, rel2cluster, task_num)
+    split_train_data = split_data(train_data_dict, vocabulary, rel2cluster, task_num, instance_num)
+    split_test_data = split_data(test_data_dict, vocabulary, rel2cluster, task_num)
+    split_valid_data = split_data(valid_data_dict, vocabulary, rel2cluster, task_num)
 
     return split_train_data, split_test_data, split_valid_data, relation_numbers, rel_features, vocabulary, embedding

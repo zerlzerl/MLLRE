@@ -72,14 +72,16 @@ def main():
         valid_task = split_valid_data[task_index]
 
 
-    if opt.meta_method == 'reptile':
-        # use reptile to train model
 
-    elif opt.meta_method == 'maml':
-        # use reptile to train model, wait implement
-        pass
-    else:
-        raise Exception('meta method %s not implement' % opt.meta_method)
+
+    # if opt.meta_method == 'reptile':
+    #     # use reptile to train model
+    #
+    # elif opt.meta_method == 'maml':
+    #     # use reptile to train model, wait implement
+    #     pass
+    # else:
+    #     raise Exception('meta method %s not implement' % opt.meta_method)
 
 
 
