@@ -50,8 +50,10 @@ def read_relation(file_path):
 
     with open(file_path, 'r', encoding='utf8') as f:
         relation_list = []
+        relation_list.append('/fill/fill/fill')
         index = 1
         relation_dict = {}
+        relation_dict['/fill/fill/fill'] = 0
         for line in f:
             relation_name = remove_return_sym(line)
             relation_list.append(relation_name)

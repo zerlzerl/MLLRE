@@ -60,21 +60,28 @@ def experiment(run, plot=True):
 
     # Training loop
     for iteration in range(n_iterations):
-        weights_before = deepcopy(model.state_dict())
+        weights_before = deepcopy(model.state_dict())  # 取出训练前的参数留存
 
         # Generate task
         f = gen_task()
-        y_all = f(x_all)
+        y_all = f(x_all) # x和y
 
         # Do SGD on this task
-        inds = rng.permutation(len(x_all))
-        train_ind = inds[:-1 * n_train]
+        inds = rng.permutation(len(x_all))  # 随机排列一个序列，或返回一个排列范围。
+        train_ind = inds[:-1 * n_train]  # 训练数据
         val_ind = inds[-1 * n_train:]       # Val contains 1/5th of the sine wave
 
-        for _ in range(inner_epochs):
-            for start in range(0, len(train_ind), n_train):
-                mbinds = train_ind[start:start + n_train]
-                train_on_batch(x_all[mbinds], y_all[mbinds])
+        for _ in range(inner_epochs):  # 内层循环
+            for start in range(0, len(train_ind), n_train):  # N_TRAIN 是step
+                mbinds = train_ind[start:start + n_train]  # 取出一组index
+                x = to_torch(x_all[mbinds])
+                y = to_torch(y_all[mbinds])
+                model.zero_grad()
+                ypred = model(x)  # 预测y
+                loss = (ypred - y).pow(2).mean()  # 求loss
+                loss.backward()  # 反向传播，自动求导出梯度
+                for param in model.parameters():
+                    param.data -= inner_step_size * param.grad.data  # 根据梯度信息，手动step更新梯度
 
         if run == 'MAML':
             outer_step_size = outer_stepsize_maml * (1 - iteration / n_iterations)  # linear schedule
@@ -98,7 +105,7 @@ def experiment(run, plot=True):
         else:
             # Interpolate between current weights and trained weights from this task
             # I.e. (weights_before - weights_after) is the meta-gradient
-            weights_after = model.state_dict()
+            weights_after = model.state_dict()  # 经过inner_epoch轮次的梯度更新后weights
             outerstepsize = outer_stepsize_reptile * (1 - iteration / n_iterations)  # linear schedule
             model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outerstepsize
                                    for name in weights_before})

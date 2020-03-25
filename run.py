@@ -1,11 +1,93 @@
 from utils import *
 from data_loader import *
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import argparse
 import numpy as np
 import random
 from model import SimilarityModel
 from copy import deepcopy
+import torch.optim as optim
+
+def process_samples(sample_list, all_relations, device):
+    questions = []
+    relations = []
+    relation_set_lengths = []
+    for sample in sample_list:
+        question = torch.tensor(sample[2], dtype=torch.long).to(device)
+        #print(relations[sample[0]])
+        #print(sample)
+        pos_relation = torch.tensor(all_relations[sample[0]],
+                                    dtype=torch.long).to(device)  # 正确关系的tensor，一维数组
+        neg_relations = [torch.tensor(all_relations[index],
+                                      dtype=torch.long).to(device)
+                         for index in sample[1]]  # 候选的错误关系tensor
+        relation_set_lengths.append(len(neg_relations)+1)
+        relations += [pos_relation] + neg_relations  # 合并
+        #questions += [question for i in range(relation_set_lengths[-1])]
+        questions += [question] * relation_set_lengths[-1]
+    return questions, relations, relation_set_lengths
+
+def ranking_sequence(sequence):
+    word_lengths = torch.tensor([len(sentence) for sentence in sequence])
+    rankedi_word, indexs = word_lengths.sort(descending = True)
+    ranked_indexs, inverse_indexs = indexs.sort()
+    #print(indexs)
+    sequence = [sequence[i] for i in indexs]
+    return sequence, inverse_indexs
+
+def feed_samples(model, samples, loss_function, all_relations, device,
+                 alignment_model=None):
+    """
+
+    :param model: SimilarityModel
+    :param samples: 一个batch的训练数据
+    :param loss_function: MarginLoss：计算两个向量之间的相似度，当两个向量之间的距离大于margin，则loss为正，小于margin，loss为0
+    :param all_relations: 全部关系包括/fill/fill/fill的word list的list。 = [[rel_0_word_indices], [rel_1_word_indices], ..., [rel_80_word_indices]]
+    :param device:
+    :param alignment_model:
+    :return:
+    """
+    questions, relations, relation_set_lengths = process_samples(
+        samples, all_relations, device)  # 将每个sample都进行展开，做成question和一个候选关系一对一的形式，relation_set_lengths记录了每个sample展开成了几个句子
+    ranked_questions, alignment_question_indexs = \
+        ranking_sequence(questions)  # 输入一个一维tensor的list，对其中的每一个list，按其中元素的长度进行排序，从大到小排序，返回排序后的list和对应原序列中的index
+    ranked_relations, alignment_relation_indexs = \
+        ranking_sequence(relations)
+    question_lengths = [len(question) for question in ranked_questions]  # 排序之后每个question list中句子的长度
+    relation_lengths = [len(relation) for relation in ranked_relations]  # 排序之后每个relation list中句子的长度
+    pad_questions = torch.nn.utils.rnn.pad_sequence(ranked_questions)  # 进行补齐
+    pad_relations = torch.nn.utils.rnn.pad_sequence(ranked_relations)
+    pad_questions = pad_questions.to(device)
+    pad_relations = pad_relations.to(device)
+
+    model.zero_grad()
+    if alignment_model is not None:
+        alignment_model.zero_grad()
+    model.init_hidden(device, sum(relation_set_lengths))
+    all_scores = model(pad_questions, pad_relations, device,
+                       alignment_question_indexs, alignment_relation_indexs,
+                       question_lengths, relation_lengths, alignment_model)  # 每个句子和关系对的similarity score
+    all_scores = all_scores.to('cpu')
+    pos_scores = []
+    neg_scores = []
+    pos_index = []
+    start_index = 0
+    for length in relation_set_lengths:
+        pos_index.append(start_index)
+        pos_scores.append(all_scores[start_index].expand(length-1))
+        neg_scores.append(all_scores[start_index+1:start_index+length])
+        start_index += length
+    pos_scores = torch.cat(pos_scores)
+    neg_scores = torch.cat(neg_scores)
+    alignment_model_criterion = nn.MSELoss()
+
+    loss = loss_function(pos_scores, neg_scores,
+                         torch.ones(sum(relation_set_lengths)-
+                                    len(relation_set_lengths)))
+    loss.backward()
+    return all_scores, loss
 
 def main():
     parser = argparse.ArgumentParser()
@@ -31,10 +113,15 @@ def main():
                         help='relation encode method')
     parser.add_argument('--meta_method', default='reptile',
                         help='meta learning method, maml and reptile can be choose')
+    parser.add_argument('--batch_size', default=50, type=float,
+                        help='Reptile inner loop batch size')
     parser.add_argument('--task_num', default=10, type=int,
                         help='number of tasks')
     parser.add_argument('--train_instance_num', default=100, type=int,
                         help='number of instances for one relation, -1 means all.')
+    parser.add_argument('--loss_margin', default=0.5, type=float,
+                        help='loss margin setting')
+
     parser.add_argument('--step_size', default=0.1, type=float,
                         help='step size Epsilon')
     parser.add_argument('--learning_rate', default=1e-3, type=float,
@@ -64,12 +151,67 @@ def main():
     inner_model = SimilarityModel(opt.embedding_dim, opt.hidden_dim, len(vocabulary),
                             np.array(embedding), 1, device)
 
-    for task_index in range(opt.task_num):
+    memory_data = []
+    memory_question_embed = []
+    memory_relation_embed = []
+    sequence_results = []
+    result_whole_test = []
+    seen_relations = []
+    all_seen_relations = []
+    memory_index = 0
+    for task_index in range(opt.task_num):  # outside loop
+        # reptile start model parameters pi
         weights_before = deepcopy(inner_model.state_dict())
 
         train_task = split_train_data[task_index]
         test_task = split_test_data[task_index]
         valid_task = split_valid_data[task_index]
+
+        # collect seen relations
+        for data_item in train_task:
+            if data_item[0] not in seen_relations:
+                seen_relations.append(data_item[0])
+
+        # remove unseen relations
+        current_train_data = remove_unseen_relation(train_task, seen_relations)
+        current_valid_data = remove_unseen_relation(valid_task, seen_relations)
+        current_test_data = []
+        for previous_task_id in range(task_index + 1):
+            current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations))
+
+        # train inner_model
+        loss_function = nn.MarginRankingLoss(opt.loss_margin)
+        inner_model = inner_model.to(device)
+        optimizer = optim.Adam(inner_model.parameters(), lr=opt.learning_rate)
+
+        batch_num = (len(current_train_data) - 1) // opt.batch_size + 1
+        for batch in range(batch_num):
+            batch_train_data = current_train_data[batch * opt.batch_size: (batch + 1) * opt.batch_size]
+
+            if len(memory_data) > 0:
+                all_seen_data = []
+                for one_batch_memory in memory_data:
+                    all_seen_data += one_batch_memory
+
+                memory_batch = memory_data[memory_index]
+
+                scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
+
+            scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
+
+            optimizer.step()
+            del scores
+            del loss
+            # for param in inner_model.parameters():
+            #     param.data -= opt.learning_rate * param.grad.data  # 根据梯度信息，手动step更新梯度
+
+        weights_after = inner_model.state_dict()  # 经过inner_epoch轮次的梯度更新后weights
+        outerstepsize = opt.step_size * (1 - task_index / opt.task_num)  # linear schedule
+        inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outerstepsize
+                               for name in weights_before})
+
+        print()
+
 
 
 
