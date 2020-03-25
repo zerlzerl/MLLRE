@@ -285,10 +285,12 @@ def main():
                     memory_batch = memory_data[memory_index]
 
                     scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
+                    optimizer.step()
+                    memory_index = (memory_index+1) % len(memory_data)
 
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
-                total_loss += loss
                 optimizer.step()
+                total_loss += loss
             # print()
             t.set_description('Task %i Epoch %i' % (task_index+1, epoch+1))
             t.set_postfix(loss=total_loss.item())
