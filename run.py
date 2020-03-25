@@ -1,3 +1,7 @@
+import sys
+
+from tqdm import tqdm
+
 from utils import *
 from data_loader import *
 import torch
@@ -9,6 +13,26 @@ import random
 from model import SimilarityModel
 from copy import deepcopy
 import torch.optim as optim
+
+# process the data by adding questions
+def process_testing_samples(sample_list, all_relations, device):
+    questions = []
+    relations = []
+    gold_relation_indexs = []
+    relation_set_lengths = []
+    for sample in sample_list:
+        question = torch.tensor(sample[2], dtype=torch.long).to(device)
+        #print(relations[sample[0]])
+        #print(sample)
+        gold_relation_indexs.append(sample[0])
+        neg_relations = [torch.tensor(all_relations[index],
+                                      dtype=torch.long).to(device)
+                         for index in sample[1]]
+        relation_set_lengths.append(len(neg_relations))
+        relations += neg_relations
+        #questions += [question for i in range(relation_set_lengths[-1])]
+        questions += [question] * relation_set_lengths[-1]
+    return gold_relation_indexs, questions, relations, relation_set_lengths
 
 def process_samples(sample_list, all_relations, device):
     questions = []
@@ -89,6 +113,64 @@ def feed_samples(model, samples, loss_function, all_relations, device,
     loss.backward()
     return all_scores, loss
 
+def evaluate_model(model, testing_data, batch_size, all_relations, device,
+                   reverse_model=None):
+    """
+
+    :param model:
+    :param testing_data:
+    :param batch_size:
+    :param all_relations:
+    :param device:
+    :param reverse_model:
+    :return:
+    """
+    #print('start evaluate')
+    num_correct = 0
+    #testing_data = testing_data[0:100]
+    for i in range((len(testing_data)-1)//batch_size+1):
+        samples = testing_data[i*batch_size:(i+1)*batch_size]
+        gold_relation_indexs, questions, relations, relation_set_lengths = \
+            process_testing_samples(samples, all_relations, device)
+        model.init_hidden(device, sum(relation_set_lengths))
+        ranked_questions, reverse_question_indexs = \
+            ranking_sequence(questions)
+        ranked_relations, reverse_relation_indexs = \
+            ranking_sequence(relations)
+        question_lengths = [len(question) for question in ranked_questions]
+        relation_lengths = [len(relation) for relation in ranked_relations]
+        #print(ranked_questions)
+        pad_questions = torch.nn.utils.rnn.pad_sequence(ranked_questions)
+        pad_relations = torch.nn.utils.rnn.pad_sequence(ranked_relations)
+        all_scores = model(pad_questions, pad_relations, device,
+                           reverse_question_indexs, reverse_relation_indexs,
+                           question_lengths, relation_lengths, reverse_model)
+        start_index = 0
+        pred_indexs = []
+        #print('len of relation_set:', len(relation_set_lengths))
+        for j in range(len(relation_set_lengths)):
+            length = relation_set_lengths[j]
+            cand_indexs = samples[j][1]
+            pred_index = (cand_indexs[
+                all_scores[start_index:start_index+length].argmax()])
+            if pred_index == gold_relation_indexs[j]:
+                num_correct += 1
+            #print('scores:', all_scores[start_index:start_index+length])
+            #print('cand indexs:', cand_indexs)
+            #print('pred, true:',pred_index, gold_relation_indexs[j])
+            start_index += length
+    #print(cand_scores[-1])
+    #print('num correct:', num_correct)
+    #print('correct rate:', float(num_correct)/len(testing_data))
+    return float(num_correct)/len(testing_data)
+
+def print_list(result):
+    for num in result:
+        sys.stdout.write('%.3f, ' %num)
+    print('')
+
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda_id', default=0, type=int,
@@ -117,19 +199,24 @@ def main():
                         help='Reptile inner loop batch size')
     parser.add_argument('--task_num', default=10, type=int,
                         help='number of tasks')
-    parser.add_argument('--train_instance_num', default=100, type=int,
+    parser.add_argument('--train_instance_num', default=200, type=int,
                         help='number of instances for one relation, -1 means all.')
     parser.add_argument('--loss_margin', default=0.5, type=float,
                         help='loss margin setting')
-
-    parser.add_argument('--step_size', default=0.1, type=float,
+    parser.add_argument('--outside_epoch', default=40, type=float,
+                        help='task level epoch')
+    parser.add_argument('--step_size', default=0.5, type=float,
                         help='step size Epsilon')
-    parser.add_argument('--learning_rate', default=1e-3, type=float,
+    parser.add_argument('--learning_rate', default=5e-3, type=float,
                         help='learning rate')
     parser.add_argument('--num_samplers', default=50, type=int,
                         help='number of samplers selected in one task')
     parser.add_argument('--random_seed', default=317, type=int,
                         help='random seed')
+    parser.add_argument('--task_memory_size', default=50, type=int,
+                        help='number of samples for each task')
+    parser.add_argument('--memory_select_method', default='random',
+                        help='the method of sample memory data')
 
 
 
@@ -183,25 +270,29 @@ def main():
         loss_function = nn.MarginRankingLoss(opt.loss_margin)
         inner_model = inner_model.to(device)
         optimizer = optim.Adam(inner_model.parameters(), lr=opt.learning_rate)
+        t = tqdm(range(opt.outside_epoch))
+        for epoch in t:
+            batch_num = (len(current_train_data) - 1) // opt.batch_size + 1
+            total_loss = 0.0
+            for batch in range(batch_num):
+                batch_train_data = current_train_data[batch * opt.batch_size: (batch + 1) * opt.batch_size]
 
-        batch_num = (len(current_train_data) - 1) // opt.batch_size + 1
-        for batch in range(batch_num):
-            batch_train_data = current_train_data[batch * opt.batch_size: (batch + 1) * opt.batch_size]
+                if len(memory_data) > 0:
+                    all_seen_data = []
+                    for one_batch_memory in memory_data:
+                        all_seen_data += one_batch_memory
 
-            if len(memory_data) > 0:
-                all_seen_data = []
-                for one_batch_memory in memory_data:
-                    all_seen_data += one_batch_memory
+                    memory_batch = memory_data[memory_index]
 
-                memory_batch = memory_data[memory_index]
+                    scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
 
-                scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
-
-            scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
-
-            optimizer.step()
-            del scores
-            del loss
+                scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
+                total_loss += loss
+                optimizer.step()
+            # print()
+            t.set_description('Task %i Epoch %i' % (task_index+1, epoch+1))
+            t.set_postfix(loss=total_loss.item())
+            t.update(1)
             # for param in inner_model.parameters():
             #     param.data -= opt.learning_rate * param.grad.data  # 根据梯度信息，手动step更新梯度
 
@@ -210,7 +301,15 @@ def main():
         inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outerstepsize
                                for name in weights_before})
 
-        print()
+        results = [evaluate_model(inner_model, test_data, opt.batch_size, relation_numbers, device)
+                   for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
+
+        # sample memory from current_train_data
+        memory_data.append(select_data(inner_model, current_train_data, opt.task_memory_size,
+                                       relation_numbers, opt.batch_size, device))  # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
+
+        print_list(results)
+
 
 
 

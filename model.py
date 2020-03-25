@@ -22,7 +22,7 @@ class BiLSTM(nn.Module):
 
         # The LSTM takes word embeddings as inputs, and outputs hidden states
         # with dimensionality hidden_dim.
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, bidirectional=True)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, bidirectional=True).to(device)
 
         #self.maxpool = nn.MaxPool1d(hidden_dim*2)
         self.hidden = self.build_hidden()
