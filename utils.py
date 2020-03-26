@@ -1,5 +1,7 @@
 import pickle as pkl
 import json
+import random
+
 import numpy as np
 import torch
 from sklearn import preprocessing
@@ -103,3 +105,6 @@ def select_data(model, samples, num_sel_data, all_relations, batch_size, device)
         sel_index = np.argmin(distances[:,i])
         selected_samples.append(samples[sel_index])
     return selected_samples
+
+def random_select_data(current_train_data, task_memory_size):
+    return random.sample(current_train_data, task_memory_size)

@@ -190,7 +190,7 @@ def main():
     parser.add_argument('--hidden_dim', default=200, type=int,
                         help='BiLSTM hidden dimensional')
     parser.add_argument('--task_arrange', default='random',
-                        help='task arrangement method')
+                        help='task arrangement method, e.g. cluster_by_glove_embedding, random')
     parser.add_argument('--rel_encode', default='glove',
                         help='relation encode method')
     parser.add_argument('--meta_method', default='reptile',
@@ -203,25 +203,25 @@ def main():
                         help='number of instances for one relation, -1 means all.')
     parser.add_argument('--loss_margin', default=0.5, type=float,
                         help='loss margin setting')
-    parser.add_argument('--outside_epoch', default=40, type=float,
+    parser.add_argument('--outside_epoch', default=200, type=float,
                         help='task level epoch')
-    parser.add_argument('--step_size', default=0.5, type=float,
+    parser.add_argument('--early_stop', default=10, type=float,
+                        help='task level epoch')
+    parser.add_argument('--step_size', default=0.4, type=float,
                         help='step size Epsilon')
-    parser.add_argument('--learning_rate', default=5e-3, type=float,
+    parser.add_argument('--learning_rate', default=2e-3, type=float,
                         help='learning rate')
-    parser.add_argument('--num_samplers', default=50, type=int,
-                        help='number of samplers selected in one task')
     parser.add_argument('--random_seed', default=317, type=int,
                         help='random seed')
     parser.add_argument('--task_memory_size', default=50, type=int,
                         help='number of samples for each task')
-    parser.add_argument('--memory_select_method', default='random',
-                        help='the method of sample memory data')
+    parser.add_argument('--memory_select_method', default='vec_cluster',
+                        help='the method of sample memory data, e.g. vec_cluster, random, difficulty')
 
 
 
     opt = parser.parse_args()
-
+    print(opt)
     random.seed(opt.random_seed)
     torch.manual_seed(opt.random_seed)
     np.random.seed(opt.random_seed)
@@ -271,6 +271,9 @@ def main():
         inner_model = inner_model.to(device)
         optimizer = optim.Adam(inner_model.parameters(), lr=opt.learning_rate)
         t = tqdm(range(opt.outside_epoch))
+        best_valid_acc = 0.0
+        early_stop = 0
+        best_checkpoint = ''
         for epoch in t:
             batch_num = (len(current_train_data) - 1) // opt.batch_size + 1
             total_loss = 0.0
@@ -283,22 +286,43 @@ def main():
                         all_seen_data += one_batch_memory
 
                     memory_batch = memory_data[memory_index]
-
-                    scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
-                    optimizer.step()
+                    batch_train_data.extend(memory_batch)
+                    # scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
+                    # optimizer.step()
                     memory_index = (memory_index+1) % len(memory_data)
-
+                # random.shuffle(batch_train_data)
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
                 optimizer.step()
                 total_loss += loss
+
+            # valid test
+            valid_acc = evaluate_model(inner_model, current_valid_data, opt.batch_size, relation_numbers, device)
+            # checkpoint
+            checkpoint = {'net_state': inner_model.state_dict(), 'optimizer': optimizer.state_dict()}
+            if valid_acc > best_valid_acc:
+                best_checkpoint = './checkpoint/checkpoint_task%d_epoch%d.pth.tar' % (task_index, epoch)
+                torch.save(checkpoint, best_checkpoint)
+                best_valid_acc = valid_acc
+                early_stop = 0
+            else:
+                early_stop += 1
+
             # print()
             t.set_description('Task %i Epoch %i' % (task_index+1, epoch+1))
-            t.set_postfix(loss=total_loss.item())
+            t.set_postfix(loss=total_loss.item(), valid_acc=valid_acc, early_stop=early_stop, best_checkpoint=best_checkpoint)
             t.update(1)
-            # for param in inner_model.parameters():
-            #     param.data -= opt.learning_rate * param.grad.data  # 根据梯度信息，手动step更新梯度
 
-        weights_after = inner_model.state_dict()  # 经过inner_epoch轮次的梯度更新后weights
+            if early_stop >= opt.early_stop:
+                # 已经充分训练了
+                break
+        t.close()
+        print('Load best check point from %s' % best_checkpoint)
+        checkpoint = torch.load(best_checkpoint)
+
+        weights_after = checkpoint['net_state']
+
+
+        # weights_after = inner_model.state_dict()  # 经过inner_epoch轮次的梯度更新后weights
         outerstepsize = opt.step_size * (1 - task_index / opt.task_num)  # linear schedule
         inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outerstepsize
                                for name in weights_before})
@@ -307,10 +331,27 @@ def main():
                    for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
 
         # sample memory from current_train_data
-        memory_data.append(select_data(inner_model, current_train_data, opt.task_memory_size,
-                                       relation_numbers, opt.batch_size, device))  # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
+        if opt.memory_select_method == 'random':
+            memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size / results[-1])))
+        elif opt.memory_select_method == 'vec_cluster':
+            memory_data.append(select_data(inner_model, current_train_data, int(opt.task_memory_size / results[-1]),
+                                           relation_numbers, opt.batch_size, device))  # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
+        elif opt.memory_select_method == 'difficulty':
+            memory_data.append()
+
+        # 用所有memory先训练一次
+        # for i in range(2):
+
+
 
         print_list(results)
+        avg_result = sum(results) / len(results)
+        test_set_size = [len(testdata) for testdata in current_test_data]
+        whole_result = sum([results[i] * test_set_size[i] for i in range(len(current_test_data))]) / sum(test_set_size)
+        print('test_set_size: [%s]' % ', '.join([str(size) for size in test_set_size]))
+        print('avg_acc: %.3f, whole_acc: %.3f' % (avg_result, whole_result))
+
+
 
 
 

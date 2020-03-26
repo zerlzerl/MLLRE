@@ -252,9 +252,14 @@ def rel_glove_feature(relation_file, glove_file):
 def rel_kg_feature():
     pass
 
-def cluster_data_by_glove(task_num, ):
+def cluster_data_by_glove(task_num, rel_features):
+    cluster = KMeans(n_clusters=task_num).fit(rel_features)
+    label = cluster.labels_
+    rel2label = {}
+    for index in range(len(label)):
+        rel2label[index] = label[index]
     # waits implement
-    pass
+    return rel2label
 
 def cluster_data_by_kg(task_num):
     # waits implement
@@ -279,7 +284,9 @@ def load_data(train_file, valid_file, test_file, relation_file, glove_file, embe
             raise Exception('rel_encode method %s not implement.' % rel_encode)
 
     elif task_arrange == 'cluster_by_glove_embedding':
-        rel2cluster, rel_features = cluster_data_by_glove(task_num)
+        rel_features = rel_glove_feature(relation_file, glove_file)
+        rel2cluster = cluster_data_by_glove(task_num, rel_features)
+
     elif task_arrange == 'cluster_by_kg_embedding':
         rel2cluster, rel_features = cluster_data_by_kg(task_num)
     else:
