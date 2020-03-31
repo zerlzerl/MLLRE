@@ -323,9 +323,17 @@ def main():
 
 
         # weights_after = inner_model.state_dict()  # 经过inner_epoch轮次的梯度更新后weights
-        outerstepsize = opt.step_size * (1 - task_index / opt.task_num)  # linear schedule
-        inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outerstepsize
+        outer_step_size = opt.step_size * (1 - task_index / opt.task_num)  # linear schedule
+        # outer_step_size = opt.step_size * 0.9
+        inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outer_step_size
                                for name in weights_before})
+
+        # 用memory进行训练：
+        # for i in range(5):
+        #     for one_batch_memory in memory_data:
+        #         scores, loss = feed_samples(inner_model, one_batch_memory, loss_function, relation_numbers, device)
+        #         optimizer.step()
+
 
         results = [evaluate_model(inner_model, test_data, opt.batch_size, relation_numbers, device)
                    for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
