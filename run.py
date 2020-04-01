@@ -138,6 +138,8 @@ def main():
                         help='relation name file')
     parser.add_argument('--glove_file', default='dataset/glove.6B.300d.txt',
                         help='glove embedding file')
+    parser.add_argument('--kl_dist_file', default='dataset/kl_dist_ht.json',
+                        help='glove embedding file')
     parser.add_argument('--embedding_dim', default=300, type=int,
                         help='word embeddings dimensional')
     parser.add_argument('--hidden_dim', default=200, type=int,
@@ -170,10 +172,13 @@ def main():
                         help='number of samples for each task')
     parser.add_argument('--memory_select_method', default='vec_cluster',
                         help='the method of sample memory data, e.g. vec_cluster, random, difficulty')
-
-
+    parser.add_argument('--curriculum_rel_num', default=3,
+                        help='curriculum learning relation sampled number for current training relation')
+    parser.add_argument('--curriculum_instance_num', default=10,
+                        help='curriculum learning instance sampled number for a sampled relation')
 
     opt = parser.parse_args()
+
     print(opt)
     random.seed(opt.random_seed)
     torch.manual_seed(opt.random_seed)
@@ -183,10 +188,16 @@ def main():
     device = torch.device(('cuda:%d' % opt.cuda_id) if torch.cuda.is_available() and opt.cuda_id >= 0 else 'cpu')
 
     # do following process
-    split_train_data, split_test_data, split_valid_data, relation_numbers, rel_features, vocabulary, embedding = \
+    split_train_data, train_data_dict, split_test_data, test_data_dict, split_valid_data, valid_data_dict, \
+    relation_numbers, rel_features, vocabulary, embedding = \
         load_data(opt.train_file, opt.valid_file, opt.test_file, opt.relation_file, opt.glove_file,
                   opt.embedding_dim, opt.task_arrange, opt.rel_encode, opt.task_num,
                   opt.train_instance_num)
+    # kl similarity of the joint distribution of head and tail
+    kl_dist_ht = read_json(opt.kl_dist_file)
+
+    # tmp = [[0, 1, 2, 3], [1, 0, 4, 6], [2, 4, 0, 5], [3, 6, 5, 0]]
+    sorted_sililarity_index = np.argsort(-np.asarray(kl_dist_ht), axis=1) + 1
     # prepare model
     inner_model = SimilarityModel(opt.embedding_dim, opt.hidden_dim, len(vocabulary),
                                   np.array(embedding), 1, device)
@@ -228,10 +239,10 @@ def main():
         early_stop = 0
         best_checkpoint = ''
         for epoch in t:
-            batch_num = (len(current_train_data) - 1) // opt.batch_size + 1
+            batch_num = (len(current_train_data) - 1) // opt.train_instance_num + 1
             total_loss = 0.0
             for batch in range(batch_num):
-                batch_train_data = current_train_data[batch * opt.batch_size: (batch + 1) * opt.batch_size]
+                batch_train_data = current_train_data[batch * opt.train_instance_num: (batch + 1) * opt.train_instance_num]
 
                 if len(memory_data) > 0:
                     all_seen_data = []
@@ -244,6 +255,32 @@ def main():
                     # optimizer.step()
                     memory_index = (memory_index+1) % len(memory_data)
                 # random.shuffle(batch_train_data)
+                # curriculum before batch_train
+                if task_index > 0:
+                    current_train_rel = batch_train_data[0][0]
+                    current_rel_similarity_sorted_index = sorted_sililarity_index[current_train_rel + 1]
+                    seen_relation_sorted_index = []
+                    for rel in current_rel_similarity_sorted_index:
+                        if rel in seen_relations:
+                            seen_relation_sorted_index.append(rel)
+
+                    curriculum_rel_list = []
+                    if opt.curriculum_rel_num >= len(seen_relation_sorted_index):
+                        curriculum_rel_list = seen_relation_sorted_index[:]
+                    else:
+                        step = len(seen_relation_sorted_index) // opt.curriculum_rel_num
+                        for i in range(0, len(seen_relation_sorted_index), step):
+                            curriculum_rel_list.append(seen_relation_sorted_index[i])
+
+                    curriculum_instance_list = []
+                    for curriculum_rel in curriculum_rel_list:
+                        curriculum_instance_list.extend(random.sample(train_data_dict[curriculum_rel], opt.curriculum_instance_num))
+
+                    curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
+                    feed_samples(inner_model, curriculum_instance_list, loss_function, relation_numbers, device)
+                    optimizer.step()
+
+                #
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
                 optimizer.step()
                 total_loss += loss
