@@ -237,7 +237,7 @@ def get_embedding(relation_name, glove_embeddings):
         if word.lower() in glove_embeddings:
             relation_embeddings.append(glove_embeddings[word.lower()])
         else:
-            print(word,"is not contained in glove vocabulary")
+            print(word, "is not contained in glove vocabulary")
     return np.mean(relation_embeddings, 0)
 
 def rel_glove_feature(relation_file, glove_file):
