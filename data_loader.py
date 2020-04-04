@@ -200,21 +200,17 @@ def random_split_relation(task_num, relation_dict):
 
     return rel2label
 
-def split_data(data, vocabulary, rel2cluster, task_num, instance_num=-1):  # -1 means all
+def split_data(data, vocabulary, rel2cluster, task_num):  # -1 means all
     separated_data = [None] * task_num
     for rel, items in data.items():
         rel_cluster = rel2cluster[rel]
         items = transform_questions(items, vocabulary)
 
-        if instance_num >= 0:
-            sampled_data = random.sample(items, instance_num)
-        else:
-            sampled_data = items
-
+        sampled_items = items[:]
         if separated_data[rel_cluster] is None:
-            separated_data[rel_cluster] = sampled_data
+            separated_data[rel_cluster] = sampled_items
         else:
-            separated_data[rel_cluster].extend(sampled_data)
+            separated_data[rel_cluster].extend(sampled_items)
 
     return separated_data
 
@@ -292,7 +288,9 @@ def load_data(train_file, valid_file, test_file, relation_file, glove_file, embe
     else:
         raise Exception('task arrangement method %s not implement' % task_arrange)
 
-    split_train_data = split_data(train_data_dict, vocabulary, rel2cluster, task_num, instance_num)
+    if instance_num >= 0:
+        train_data_dict = {name: random.sample(train_data_dict[name], instance_num) for name in train_data_dict}
+    split_train_data = split_data(train_data_dict, vocabulary, rel2cluster, task_num)
     split_test_data = split_data(test_data_dict, vocabulary, rel2cluster, task_num)
     split_valid_data = split_data(valid_data_dict, vocabulary, rel2cluster, task_num)
 

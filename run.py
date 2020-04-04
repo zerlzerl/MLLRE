@@ -163,7 +163,7 @@ def main():
                         help='task level epoch')
     parser.add_argument('--early_stop', default=20, type=float,
                         help='task level epoch')
-    parser.add_argument('--step_size', default=0.6, type=float,
+    parser.add_argument('--step_size', default=0.7, type=float,
                         help='step size Epsilon')
     parser.add_argument('--learning_rate', default=2e-3, type=float,
                         help='learning rate')
@@ -261,20 +261,21 @@ def main():
 
                 # curriculum before batch_train
                 if task_index > 0:
-                    current_train_rel = batch_train_data[0][0]
-                    current_rel_similarity_sorted_index = sorted_sililarity_index[current_train_rel + 1]
-                    seen_relation_sorted_index = []
-                    for rel in current_rel_similarity_sorted_index:
-                        if rel in seen_relations:
-                            seen_relation_sorted_index.append(rel)
-
-                    curriculum_rel_list = []
-                    if opt.curriculum_rel_num >= len(seen_relation_sorted_index):
-                        curriculum_rel_list = seen_relation_sorted_index[:]
-                    else:
-                        step = len(seen_relation_sorted_index) // opt.curriculum_rel_num
-                        for i in range(0, len(seen_relation_sorted_index), step):
-                            curriculum_rel_list.append(seen_relation_sorted_index[i])
+                    # current_train_rel = batch_train_data[0][0]
+                    # current_rel_similarity_sorted_index = sorted_sililarity_index[current_train_rel + 1]
+                    # seen_relation_sorted_index = []
+                    # for rel in current_rel_similarity_sorted_index:
+                    #     if rel in seen_relations:
+                    #         seen_relation_sorted_index.append(rel)
+                    #
+                    # curriculum_rel_list = []
+                    # if opt.curriculum_rel_num >= len(seen_relation_sorted_index):
+                    #     curriculum_rel_list = seen_relation_sorted_index[:]
+                    # else:
+                    #     step = len(seen_relation_sorted_index) // opt.curriculum_rel_num
+                    #     for i in range(0, len(seen_relation_sorted_index), step):
+                    #         curriculum_rel_list.append(seen_relation_sorted_index[i])
+                    curriculum_rel_list = random.sample(seen_relations, opt.curriculum_rel_num)
 
                     curriculum_instance_list = []
                     for curriculum_rel in curriculum_rel_list:
@@ -337,9 +338,9 @@ def main():
 
         # sample memory from current_train_data
         if opt.memory_select_method == 'random':
-            memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size / results[-1])))
+            memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size)))
         elif opt.memory_select_method == 'vec_cluster':
-            memory_data.append(select_data(inner_model, current_train_data, int(opt.task_memory_size / results[-1]),
+            memory_data.append(select_data(inner_model, current_train_data, int(opt.task_memory_size),
                                            relation_numbers, opt.batch_size, device))  # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
         elif opt.memory_select_method == 'difficulty':
             memory_data.append()
