@@ -33,13 +33,14 @@ def read_data(file_path):
             for line in f:
                 items = line.split('\t')
                 rel_idx = int(items[0])
-                candidate_rel_idx = [int(idx) for idx in items[1].split()]
-                tokens = remove_invalid_token(remove_return_sym(items[2]).split())
-                data_list.append([rel_idx, candidate_rel_idx, tokens])
-                if rel_idx not in data_dict:
-                    data_dict[rel_idx] = [[rel_idx, candidate_rel_idx, tokens]]
-                else:
-                    data_dict[rel_idx].append([rel_idx, candidate_rel_idx, tokens])
+                if items[1] != 'noNegativeAnswer':
+                    candidate_rel_idx = [int(idx) for idx in items[1].split()]
+                    tokens = remove_invalid_token(remove_return_sym(items[2]).split())
+                    data_list.append([rel_idx, candidate_rel_idx, tokens])
+                    if rel_idx not in data_dict:
+                        data_dict[rel_idx] = [[rel_idx, candidate_rel_idx, tokens]]
+                    else:
+                        data_dict[rel_idx].append([rel_idx, candidate_rel_idx, tokens])
 
             dump_pickle(tmp_file_path, (data_list, data_dict))
             return data_list, data_dict
