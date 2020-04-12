@@ -126,7 +126,8 @@ def print_list(result):
 
 
 def main(opt):
-    # append_log(opt.log_file, str(opt))
+    append_log(opt.log_file, str(opt))
+
     random.seed(opt.random_seed)
     torch.manual_seed(opt.random_seed)
     np.random.seed(opt.random_seed)
@@ -136,7 +137,7 @@ def main(opt):
 
     # do following process
     split_train_data, train_data_dict, split_test_data, test_data_dict, split_valid_data, valid_data_dict, \
-    relation_numbers, rel_features, vocabulary, embedding = \
+    relation_numbers, rel_features, split_train_relations, vocabulary, embedding = \
         load_data(opt.train_file, opt.valid_file, opt.test_file, opt.relation_file, opt.glove_file,
                   opt.embedding_dim, opt.task_arrange, opt.rel_encode, opt.task_num,
                   opt.train_instance_num)
@@ -158,6 +159,7 @@ def main(opt):
     result_whole_test = []
     seen_relations = []
     all_seen_relations = []
+    rel2instance_memory = {}
     memory_index = 0
     for task_index in range(opt.task_num):  # outside loop
         # reptile start model parameters pi
@@ -166,6 +168,7 @@ def main(opt):
         train_task = split_train_data[task_index]
         test_task = split_test_data[task_index]
         valid_task = split_valid_data[task_index]
+        train_relations = split_train_relations[task_index]
 
         if opt.is_few_shot == 'Y' and task_index >= opt.few_shot_after:
             # sample k instance for one relation
@@ -221,31 +224,40 @@ def main(opt):
                 # random.shuffle(batch_train_data)
 
                 # curriculum before batch_train
-                if task_index > 0:
-                    # current_train_rel = batch_train_data[0][0]
-                    # current_rel_similarity_sorted_index = sorted_sililarity_index[current_train_rel + 1]
-                    # seen_relation_sorted_index = []
-                    # for rel in current_rel_similarity_sorted_index:
-                    #     if rel in seen_relations:
-                    #         seen_relation_sorted_index.append(rel)
-                    #
-                    # curriculum_rel_list = []
-                    # if opt.curriculum_rel_num >= len(seen_relation_sorted_index):
-                    #     curriculum_rel_list = seen_relation_sorted_index[:]
-                    # else:
-                    #     step = len(seen_relation_sorted_index) // opt.curriculum_rel_num
-                    #     for i in range(0, len(seen_relation_sorted_index), step):
-                    #         curriculum_rel_list.append(seen_relation_sorted_index[i])
-                    curriculum_rel_list = random.sample(seen_relations, opt.curriculum_rel_num)
-
+                # if task_index > 0:
+                #     # current_train_rel = batch_train_data[0][0]
+                #     # current_rel_similarity_sorted_index = sorted_sililarity_index[current_train_rel + 1]
+                #     # seen_relation_sorted_index = []
+                #     # for rel in current_rel_similarity_sorted_index:
+                #     #     if rel in seen_relations:
+                #     #         seen_relation_sorted_index.append(rel)
+                #     #
+                #     # curriculum_rel_list = []
+                #     # if opt.curriculum_rel_num >= len(seen_relation_sorted_index):
+                #     #     curriculum_rel_list = seen_relation_sorted_index[:]
+                #     # else:
+                #     #     step = len(seen_relation_sorted_index) // opt.curriculum_rel_num
+                #     #     for i in range(0, len(seen_relation_sorted_index), step):
+                #     #         curriculum_rel_list.append(seen_relation_sorted_index[i])
+                #     curriculum_rel_list = random.sample(seen_relations, opt.curriculum_rel_num)
+                #
+                #     curriculum_instance_list = []
+                #     for curriculum_rel in curriculum_rel_list:
+                #         curriculum_instance_list.extend(random.sample(train_data_dict[curriculum_rel], opt.curriculum_instance_num))
+                #
+                #     curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
+                #     # optimizer.zero_grad()
+                #     scores, loss = feed_samples(inner_model, curriculum_instance_list, loss_function, relation_numbers, device)
+                #     # loss.backward()
+                #     optimizer.step()
+                if len(rel2instance_memory) > 0:  # from the second task, this will not be empty
                     curriculum_instance_list = []
-                    for curriculum_rel in curriculum_rel_list:
-                        curriculum_instance_list.extend(random.sample(train_data_dict[curriculum_rel], opt.curriculum_instance_num))
+                    curriculum_relation_list = random.sample(list(rel2instance_memory.keys()), opt.sampled_rel_num)
+                    for sampled_relation in curriculum_relation_list:
+                        curriculum_instance_list.extend(rel2instance_memory[sampled_relation])
 
                     curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
-                    # optimizer.zero_grad()
                     scores, loss = feed_samples(inner_model, curriculum_instance_list, loss_function, relation_numbers, device)
-                    # loss.backward()
                     optimizer.step()
 
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
@@ -305,6 +317,11 @@ def main(opt):
                    for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
 
         # sample memory from current_train_data
+        for rel in train_relations:
+            rel_items = train_data_dict[rel]
+            rel_memo = select_data(inner_model, rel_items, int(opt.sampled_instance_num),
+                                   relation_numbers, opt.batch_size, device)
+            rel2instance_memory[rel] = rel_memo
         if opt.task_memory_size > 0:
             if opt.memory_select_method == 'random':
                 memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size)))
@@ -396,20 +413,20 @@ if __name__ == '__main__':
                         help='task level epoch')
     parser.add_argument('--step_size', default=0.7, type=float,
                         help='step size Epsilon')
-    parser.add_argument('--learning_rate', default=2e-3, type=float,
+    parser.add_argument('--learning_rate', default=5e-3, type=float,
                         help='learning rate')
     parser.add_argument('--random_seed', default=226, type=int,
                         help='random seed')
-    parser.add_argument('--task_memory_size', default=50, type=int,
+    parser.add_argument('--task_memory_size', default=0, type=int,
                         help='number of samples for each task')
     parser.add_argument('--outer_step_formula', default='fixed',
                         help='outer step formula: linear, fixed, square_root')
     parser.add_argument('--memory_select_method', default='vec_cluster',
                         help='the method of sample memory data, e.g. vec_cluster, random, difficulty')
-    parser.add_argument('--curriculum_rel_num', default=3,
-                        help='curriculum learning relation sampled number for current training relation')
-    parser.add_argument('--curriculum_instance_num', default=5,
-                        help='curriculum learning instance sampled number for a sampled relation')
+    parser.add_argument('--sampled_rel_num', default=3,
+                        help='relation sampled number for current training relation')
+    parser.add_argument('--sampled_instance_num', default=6,
+                        help='instance sampled number for a sampled relation, total sampled 6 * 80 instances ')
     parser.add_argument('--is_few_shot', default='Y',
                         help='if open few shot experiment after few_shot_after task, N or Y')
     parser.add_argument('--few_shot_k', default=5,
@@ -417,39 +434,41 @@ if __name__ == '__main__':
     parser.add_argument('--few_shot_after', default=7,
                         help='few shot start after few_shot_after tasks')
 
-    parser.add_argument('--log_file', default='results/res_50memo_5after7.txt',
+    parser.add_argument('--log_file', default='results/res.txt',
                         help='file to save the results')
 
 
     opt = parser.parse_args()
-    # phase 1: adapt hyper-parameters：learning_rate, outer_step_formula, step_size
 
-    learning_rate = [1e-3]  # , 2e-3, 5e-3, 1e-2]
-    outer_step_formula = ['fixed']  # , 'linear', 'square_root']
-    step_size = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-    step_size_fixed = [4]  #[3, 4, 5, 6, 7, 8]
-    hyper_parameter_combinations = []
-
-    for lr in learning_rate:
-        for osf in outer_step_formula:
-            if osf == 'fixed':
-                _step_size = step_size_fixed
-            else:
-                _step_size = step_size
-            for ss in _step_size:
-                hyper_parameter_combinations.append([lr, osf, ss])
-
-    # curriculum_rel_num = [1, 3, 5]
-    # curriculum_instance_num = [1, 3, 5, 10]
-
-    for hyper_parameter in hyper_parameter_combinations:
-        append_log(opt.log_file, '\t'.join([str(hp) for hp in hyper_parameter]))
-        # opt.curriculum_rel_num = hyper_parameter[0]
-        # opt.curriculum_instance_num = hyper_parameter[1]
-        opt.learning_rate = hyper_parameter[0]
-        opt.outer_step_formula = hyper_parameter[1]
-        opt.step_size = hyper_parameter[2]
-
-        # print(opt)
-
-        main(opt)
+    main(opt)
+    # # phase 1: adapt hyper-parameters：learning_rate, outer_step_formula, step_size
+    #
+    # learning_rate = [1e-3]  # , 2e-3, 5e-3, 1e-2]
+    # outer_step_formula = ['fixed']  # , 'linear', 'square_root']
+    # step_size = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+    # step_size_fixed = [4]  #[3, 4, 5, 6, 7, 8]
+    # hyper_parameter_combinations = []
+    #
+    # for lr in learning_rate:
+    #     for osf in outer_step_formula:
+    #         if osf == 'fixed':
+    #             _step_size = step_size_fixed
+    #         else:
+    #             _step_size = step_size
+    #         for ss in _step_size:
+    #             hyper_parameter_combinations.append([lr, osf, ss])
+    #
+    # # curriculum_rel_num = [1, 3, 5]
+    # # curriculum_instance_num = [1, 3, 5, 10]
+    #
+    # for hyper_parameter in hyper_parameter_combinations:
+    #     append_log(opt.log_file, '\t'.join([str(hp) for hp in hyper_parameter]))
+    #     # opt.curriculum_rel_num = hyper_parameter[0]
+    #     # opt.curriculum_instance_num = hyper_parameter[1]
+    #     opt.learning_rate = hyper_parameter[0]
+    #     opt.outer_step_formula = hyper_parameter[1]
+    #     opt.step_size = hyper_parameter[2]
+    #
+    #     # print(opt)
+    #
+    #     main(opt)
