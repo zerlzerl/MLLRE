@@ -250,15 +250,15 @@ def main(opt):
                 #     scores, loss = feed_samples(inner_model, curriculum_instance_list, loss_function, relation_numbers, device)
                 #     # loss.backward()
                 #     optimizer.step()
-                if len(rel2instance_memory) > 0:  # from the second task, this will not be empty
-                    curriculum_instance_list = []
-                    curriculum_relation_list = random.sample(list(rel2instance_memory.keys()), opt.sampled_rel_num)
-                    for sampled_relation in curriculum_relation_list:
-                        curriculum_instance_list.extend(rel2instance_memory[sampled_relation])
-
-                    curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
-                    scores, loss = feed_samples(inner_model, curriculum_instance_list, loss_function, relation_numbers, device)
-                    optimizer.step()
+                # if len(rel2instance_memory) > 0:  # from the second task, this will not be empty
+                #     curriculum_instance_list = []
+                #     curriculum_relation_list = random.sample(list(rel2instance_memory.keys()), opt.sampled_rel_num)
+                #     for sampled_relation in curriculum_relation_list:
+                #         curriculum_instance_list.extend(rel2instance_memory[sampled_relation])
+                #
+                #     # curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
+                #     scores, loss = feed_samples(inner_model, curriculum_instance_list, loss_function, relation_numbers, device)
+                #     optimizer.step()
 
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
                 optimizer.step()
@@ -317,11 +317,12 @@ def main(opt):
                    for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
 
         # sample memory from current_train_data
-        for rel in train_relations:
-            rel_items = train_data_dict[rel]
-            rel_memo = select_data(inner_model, rel_items, int(opt.sampled_instance_num),
-                                   relation_numbers, opt.batch_size, device)
-            rel2instance_memory[rel] = rel_memo
+        # for rel in train_relations:
+        #     rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations)
+        #     rel_memo = select_data(inner_model, rel_items, int(opt.sampled_instance_num),
+        #                            relation_numbers, opt.batch_size, device)
+        #     rel2instance_memory[rel] = rel_memo
+
         if opt.task_memory_size > 0:
             if opt.memory_select_method == 'random':
                 memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size)))
@@ -371,8 +372,6 @@ def main(opt):
     append_log(opt.log_file, 'after fine-tuning: avg_acc: %.3f, whole_acc: %.3f' % (best_avg_acc, best_whole_acc))
 
 
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda_id', default=0, type=int,
@@ -403,23 +402,23 @@ if __name__ == '__main__':
                         help='Reptile inner loop batch size')
     parser.add_argument('--task_num', default=10, type=int,
                         help='number of tasks')
-    parser.add_argument('--train_instance_num', default=-1, type=int,
+    parser.add_argument('--train_instance_num', default=200, type=int,
                         help='number of instances for one relation, -1 means all.')
     parser.add_argument('--loss_margin', default=0.5, type=float,
                         help='loss margin setting')
-    parser.add_argument('--outside_epoch', default=200, type=float,
+    parser.add_argument('--outside_epoch', default=50, type=float,
                         help='task level epoch')
-    parser.add_argument('--early_stop', default=20, type=float,
+    parser.add_argument('--early_stop', default=10, type=float,
                         help='task level epoch')
     parser.add_argument('--step_size', default=0.7, type=float,
                         help='step size Epsilon')
-    parser.add_argument('--learning_rate', default=5e-3, type=float,
+    parser.add_argument('--learning_rate', default=2e-3, type=float,
                         help='learning rate')
-    parser.add_argument('--random_seed', default=226, type=int,
+    parser.add_argument('--random_seed', default=317, type=int,
                         help='random seed')
-    parser.add_argument('--task_memory_size', default=0, type=int,
+    parser.add_argument('--task_memory_size', default=50, type=int,
                         help='number of samples for each task')
-    parser.add_argument('--outer_step_formula', default='fixed',
+    parser.add_argument('--outer_step_formula', default='square_root',
                         help='outer step formula: linear, fixed, square_root')
     parser.add_argument('--memory_select_method', default='vec_cluster',
                         help='the method of sample memory data, e.g. vec_cluster, random, difficulty')
@@ -427,7 +426,7 @@ if __name__ == '__main__':
                         help='relation sampled number for current training relation')
     parser.add_argument('--sampled_instance_num', default=6,
                         help='instance sampled number for a sampled relation, total sampled 6 * 80 instances ')
-    parser.add_argument('--is_few_shot', default='Y',
+    parser.add_argument('--is_few_shot', default='N',
                         help='if open few shot experiment after few_shot_after task, N or Y')
     parser.add_argument('--few_shot_k', default=5,
                         help='few shot k instance sampled')

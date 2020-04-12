@@ -203,6 +203,7 @@ def random_split_relation(task_num, relation_dict):
 
 def split_data(data, vocabulary, rel2cluster, task_num):  # -1 means all
     separated_data = [None] * task_num
+    separated_relation = [None] * task_num
     for rel, items in data.items():
         rel_cluster = rel2cluster[rel]
         items = transform_questions(items, vocabulary)
@@ -213,7 +214,12 @@ def split_data(data, vocabulary, rel2cluster, task_num):  # -1 means all
         else:
             separated_data[rel_cluster].extend(sampled_items)
 
-    return separated_data
+        if separated_relation[rel_cluster] is None:
+            separated_relation[rel_cluster] = [rel]
+        else:
+            separated_relation[rel_cluster].append(rel)
+
+    return separated_data, separated_relation
 
 def split_relation(relation):
     word_list = []
@@ -291,9 +297,9 @@ def load_data(train_file, valid_file, test_file, relation_file, glove_file, embe
 
     if instance_num >= 0:
         train_data_dict = {name: random.sample(train_data_dict[name], instance_num) for name in train_data_dict}
-    split_train_data = split_data(train_data_dict, vocabulary, rel2cluster, task_num)
-    split_test_data = split_data(test_data_dict, vocabulary, rel2cluster, task_num)
-    split_valid_data = split_data(valid_data_dict, vocabulary, rel2cluster, task_num)
+    split_train_data, split_train_relations = split_data(train_data_dict, vocabulary, rel2cluster, task_num)
+    split_test_data, split_test_relations = split_data(test_data_dict, vocabulary, rel2cluster, task_num)
+    split_valid_data, split_valid_relations = split_data(valid_data_dict, vocabulary, rel2cluster, task_num)
 
     return split_train_data, train_data_dict, split_test_data, test_data_dict, split_valid_data, valid_data_dict, \
-           relation_numbers, rel_features, vocabulary, embedding
+           relation_numbers, rel_features, split_train_relations, vocabulary, embedding
