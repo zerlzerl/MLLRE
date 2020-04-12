@@ -13,7 +13,6 @@ import random
 from model import SimilarityModel
 from copy import deepcopy
 import torch.optim as optim
-import math
 
 def feed_samples(model, samples, loss_function, all_relations, device,
                  alignment_model=None):
@@ -64,7 +63,7 @@ def feed_samples(model, samples, loss_function, all_relations, device,
     loss = loss_function(pos_scores, neg_scores,
                          torch.ones(sum(relation_set_lengths)-
                                     len(relation_set_lengths)))
-    loss.backward()
+    # loss.backward()
     return all_scores, loss
 
 def evaluate_model(model, testing_data, batch_size, all_relations, device,
@@ -125,9 +124,57 @@ def print_list(result):
 
 
 
-def main(opt):
-    append_log(opt.log_file, str(opt))
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cuda_id', default=0, type=int,
+                        help='cuda device index, -1 means use cpu')
+    parser.add_argument('--train_file', default='dataset/training_data.txt',
+                        help='train file')
+    parser.add_argument('--valid_file', default='dataset/val_data.txt',
+                        help='valid file')
+    parser.add_argument('--test_file', default='dataset/val_data.txt',
+                        help='test file')
+    parser.add_argument('--relation_file', default='dataset/relation_name.txt',
+                        help='relation name file')
+    parser.add_argument('--glove_file', default='dataset/glove.6B.300d.txt',
+                        help='glove embedding file')
+    parser.add_argument('--embedding_dim', default=300, type=int,
+                        help='word embeddings dimensional')
+    parser.add_argument('--hidden_dim', default=200, type=int,
+                        help='BiLSTM hidden dimensional')
+    parser.add_argument('--task_arrange', default='random',
+                        help='task arrangement method, e.g. cluster_by_glove_embedding, random')
+    parser.add_argument('--rel_encode', default='glove',
+                        help='relation encode method')
+    parser.add_argument('--meta_method', default='reptile',
+                        help='meta learning method, maml and reptile can be choose')
+    parser.add_argument('--batch_size', default=50, type=float,
+                        help='Reptile inner loop batch size')
+    parser.add_argument('--task_num', default=10, type=int,
+                        help='number of tasks')
+    parser.add_argument('--train_instance_num', default=200, type=int,
+                        help='number of instances for one relation, -1 means all.')
+    parser.add_argument('--loss_margin', default=0.5, type=float,
+                        help='loss margin setting')
+    parser.add_argument('--outside_epoch', default=200, type=float,
+                        help='task level epoch')
+    parser.add_argument('--early_stop', default=20, type=float,
+                        help='task level epoch')
+    parser.add_argument('--step_size', default=0.4, type=float,
+                        help='step size Epsilon')
+    parser.add_argument('--learning_rate', default=2e-2, type=float,
+                        help='learning rate')
+    parser.add_argument('--random_seed', default=317, type=int,
+                        help='random seed')
+    parser.add_argument('--task_memory_size', default=50, type=int,
+                        help='number of samples for each task')
+    parser.add_argument('--memory_select_method', default='vec_cluster',
+                        help='the method of sample memory data, e.g. vec_cluster, random, difficulty')
 
+
+
+    opt = parser.parse_args()
+    print(opt)
     random.seed(opt.random_seed)
     torch.manual_seed(opt.random_seed)
     np.random.seed(opt.random_seed)
@@ -136,55 +183,22 @@ def main(opt):
     device = torch.device(('cuda:%d' % opt.cuda_id) if torch.cuda.is_available() and opt.cuda_id >= 0 else 'cpu')
 
     # do following process
-    split_train_data, train_data_dict, split_test_data, test_data_dict, split_valid_data, valid_data_dict, \
-    relation_numbers, rel_features, split_train_relations, vocabulary, embedding = \
+    split_train_data, split_test_data, split_valid_data, relation_numbers, rel_features, vocabulary, embedding = \
         load_data(opt.train_file, opt.valid_file, opt.test_file, opt.relation_file, opt.glove_file,
-                  opt.embedding_dim, opt.task_arrange, opt.rel_encode, opt.task_num,
-                  opt.train_instance_num)
-
-    # kl similarity of the joint distribution of head and tail
-    kl_dist_ht = read_json(opt.kl_dist_file)
-
-    # tmp = [[0, 1, 2, 3], [1, 0, 4, 6], [2, 4, 0, 5], [3, 6, 5, 0]]
-    sorted_sililarity_index = np.argsort(-np.asarray(kl_dist_ht), axis=1) + 1
-
+                            opt.embedding_dim, opt.task_arrange, opt.rel_encode, opt.task_num,
+                            opt.train_instance_num)
     # prepare model
     inner_model = SimilarityModel(opt.embedding_dim, opt.hidden_dim, len(vocabulary),
-                                  np.array(embedding), 1, device)
+                            np.array(embedding), 1, device)
 
-    memory_data = []
-    memory_question_embed = []
-    memory_relation_embed = []
-    sequence_results = []
-    result_whole_test = []
+    memory_data = []  # B
     seen_relations = []
-    all_seen_relations = []
-    rel2instance_memory = {}
-    memory_index = 0
     for task_index in range(opt.task_num):  # outside loop
         # reptile start model parameters pi
         weights_before = deepcopy(inner_model.state_dict())
-
         train_task = split_train_data[task_index]
-        test_task = split_test_data[task_index]
+        # test_task = split_test_data[task_index]
         valid_task = split_valid_data[task_index]
-        train_relations = split_train_relations[task_index]
-
-        if opt.is_few_shot == 'Y' and task_index >= opt.few_shot_after:
-            # sample k instance for one relation
-            instance_split = {}
-            for train_instance in train_task:
-                if train_instance[0] not in instance_split:
-                    instance_split[train_instance[0]] = [train_instance]
-                else:
-                    instance_split[train_instance[0]].append(train_instance)
-
-            resampled_train_task = []
-            for rel, instance_list in instance_split.items():
-                resampled_train_task.extend(random.sample(instance_list, opt.few_shot_k))
-
-            train_task = resampled_train_task
-
         # collect seen relations
         for data_item in train_task:
             if data_item[0] not in seen_relations:
@@ -200,74 +214,64 @@ def main(opt):
         # train inner_model
         loss_function = nn.MarginRankingLoss(opt.loss_margin)
         inner_model = inner_model.to(device)
-        optimizer = optim.Adam(inner_model.parameters(), lr=opt.learning_rate)
+
         t = tqdm(range(opt.outside_epoch))
         best_valid_acc = 0.0
         early_stop = 0
         best_checkpoint = ''
         for epoch in t:
-            batch_num = (len(current_train_data) - 1) // opt.batch_size + 1
+            weights_task = deepcopy(weights_before)
+            # optimizer.zero_grad()
+            # inner_model.load_state_dict({name: weights_before[name] for name in weights_before})
+            batch_num = (len(current_train_data) - 1) // opt.train_instance_num + 1
             total_loss = 0.0
+            weights_list = [None] * (batch_num + len(memory_data))
             for batch in range(batch_num):
-                batch_train_data = current_train_data[batch * opt.batch_size: (batch + 1) * opt.batch_size]
-
-                if len(memory_data) > 0:
-                    all_seen_data = []
-                    for one_batch_memory in memory_data:
-                        all_seen_data += one_batch_memory
-
-                    memory_batch = memory_data[memory_index]
-                    batch_train_data.extend(memory_batch)
-                    # scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
-                    # optimizer.step()
-                    memory_index = (memory_index+1) % len(memory_data)
-                # random.shuffle(batch_train_data)
-
-                # curriculum before batch_train
-                # if task_index > 0:
-                #     # current_train_rel = batch_train_data[0][0]
-                #     # current_rel_similarity_sorted_index = sorted_sililarity_index[current_train_rel + 1]
-                #     # seen_relation_sorted_index = []
-                #     # for rel in current_rel_similarity_sorted_index:
-                #     #     if rel in seen_relations:
-                #     #         seen_relation_sorted_index.append(rel)
-                #     #
-                #     # curriculum_rel_list = []
-                #     # if opt.curriculum_rel_num >= len(seen_relation_sorted_index):
-                #     #     curriculum_rel_list = seen_relation_sorted_index[:]
-                #     # else:
-                #     #     step = len(seen_relation_sorted_index) // opt.curriculum_rel_num
-                #     #     for i in range(0, len(seen_relation_sorted_index), step):
-                #     #         curriculum_rel_list.append(seen_relation_sorted_index[i])
-                #     curriculum_rel_list = random.sample(seen_relations, opt.curriculum_rel_num)
-                #
-                #     curriculum_instance_list = []
-                #     for curriculum_rel in curriculum_rel_list:
-                #         curriculum_instance_list.extend(random.sample(train_data_dict[curriculum_rel], opt.curriculum_instance_num))
-                #
-                #     curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
-                #     # optimizer.zero_grad()
-                #     scores, loss = feed_samples(inner_model, curriculum_instance_list, loss_function, relation_numbers, device)
-                #     # loss.backward()
-                #     optimizer.step()
-                # if len(rel2instance_memory) > 0:  # from the second task, this will not be empty
-                #     curriculum_instance_list = []
-                #     curriculum_relation_list = random.sample(list(rel2instance_memory.keys()), opt.sampled_rel_num)
-                #     for sampled_relation in curriculum_relation_list:
-                #         curriculum_instance_list.extend(rel2instance_memory[sampled_relation])
-                #
-                #     # curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
-                #     scores, loss = feed_samples(inner_model, curriculum_instance_list, loss_function, relation_numbers, device)
-                #     optimizer.step()
-
+                # one relation's train data
+                batch_train_data = current_train_data[batch * opt.train_instance_num: (batch + 1) * opt.train_instance_num]
+                inner_model.load_state_dict(weights_task)
+                optimizer = optim.SGD(inner_model.parameters(), lr=opt.learning_rate)
+                optimizer.zero_grad()
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
-                optimizer.step()
-                total_loss += loss
 
-            # valid test
+                loss.backward()  # 计算反向传播梯度
+                # 更新参数
+                # for f in inner_model.parameters():
+                #     f.data.sub_(f.grad.data * opt.learning_rate)
+                optimizer.step()  # 更新参数
+                total_loss += loss
+                weights_list[batch] = deepcopy(inner_model.state_dict())  # 保存theta_t^i
+
+            if len(memory_data) > 0:
+                for i in range(len(memory_data)):
+                    one_batch_memory = memory_data[i]
+                    inner_model.load_state_dict(weights_task)
+                    optimizer = optim.SGD(inner_model.parameters(), lr=opt.learning_rate)
+                    optimizer.zero_grad()
+                    scores, loss = feed_samples(inner_model, one_batch_memory, loss_function, relation_numbers, device)
+
+                    loss.backward()
+                    # 更新参数
+                    # for f in inner_model.parameters():
+                    #     f.data.sub_(f.grad.data * opt.learning_rate)
+                    optimizer.step()
+                    total_loss += loss
+                    weights_list[batch_num + i] = deepcopy(inner_model.state_dict())
+
+            outer_step_size = opt.step_size * (1 / len(weights_list))
+            for name in weights_before:
+                weights_task[name] = weights_before[name] - outer_step_size * sum([weights[name] - weights_before[name]
+                                                                    for weights in weights_list])
+
+            # load state dict of weights_after
+            inner_model.load_state_dict(weights_task)
+            # weights_before = deepcopy(inner_model.state_dict())
+
+            del weights_list
+
             valid_acc = evaluate_model(inner_model, current_valid_data, opt.batch_size, relation_numbers, device)
-            # checkpoint
-            checkpoint = {'net_state': inner_model.state_dict(), 'optimizer': optimizer.state_dict()}
+
+            checkpoint = {'net_state': inner_model.state_dict()}
             if valid_acc > best_valid_acc:
                 best_checkpoint = './checkpoint/checkpoint_task%d_epoch%d.pth.tar' % (task_index, epoch)
                 torch.save(checkpoint, best_checkpoint)
@@ -285,189 +289,152 @@ def main(opt):
                 # 已经充分训练了
                 break
         t.close()
-        print('Load best check point from %s' % best_checkpoint)
-        checkpoint = torch.load(best_checkpoint)
-
-        weights_after = checkpoint['net_state']
-
-        # weights_after = inner_model.state_dict()  # 经过inner_epoch轮次的梯度更新后weights
-        # if task_index == opt.task_num - 1:
-        #     outer_step_size = opt.step_size * (1 - 5 / opt.task_num)
-        # else:
-        # outer_step_size = math.sqrt(opt.step_size * (1 - task_index / opt.task_num))
-        outer_step_size = math.sqrt(opt.step_size * (1 - task_index / opt.task_num))
-        if opt.outer_step_formula == 'linear':
-            outer_step_size = math.sqrt(opt.step_size * (1 - task_index / opt.task_num))
-        elif opt.outer_step_formula == 'square_root':
-            outer_step_size = opt.step_size * (1 - task_index / opt.task_num)
-        elif opt.outer_step_formula == 'fixed':
-            outer_step_size = opt.step_size / opt.task_num
-        # outer_step_size = opt.step_size / opt.task_num
-        # outer_step_size = 0.4
-        inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outer_step_size
-                                     for name in weights_before})
-
-        # 用memory进行训练：
-        # for i in range(5):
-        #     for one_batch_memory in memory_data:
-        #         scores, loss = feed_samples(inner_model, one_batch_memory, loss_function, relation_numbers, device)
-        #         optimizer.step()
-
-        results = [evaluate_model(inner_model, test_data, opt.batch_size, relation_numbers, device)
-                   for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
 
         # sample memory from current_train_data
-        # for rel in train_relations:
-        #     rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations)
-        #     rel_memo = select_data(inner_model, rel_items, int(opt.sampled_instance_num),
-        #                            relation_numbers, opt.batch_size, device)
-        #     rel2instance_memory[rel] = rel_memo
+        if opt.memory_select_method == 'random':
+            memory_data.append(random_select_data(current_train_data, opt.task_memory_size))
+        elif opt.memory_select_method == 'vec_cluster':
+            memory_data.append(select_data(inner_model, current_train_data, opt.task_memory_size,
+                                           relation_numbers, opt.batch_size, device))  # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
+        elif opt.memory_select_method == 'difficulty':
+            memory_data.append()
 
-        if opt.task_memory_size > 0:
-            if opt.memory_select_method == 'random':
-                memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size)))
-            elif opt.memory_select_method == 'vec_cluster':
-                memory_data.append(select_data(inner_model, current_train_data, int(opt.task_memory_size),
-                                               relation_numbers, opt.batch_size, device))
-                # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
-            elif opt.memory_select_method == 'difficulty':
-                memory_data.append()
-
-        print_list(results)
-        avg_result = sum(results) / len(results)
-        test_set_size = [len(testdata) for testdata in current_test_data]
-        whole_result = sum([results[i] * test_set_size[i] for i in range(len(current_test_data))]) / sum(test_set_size)
-        test_set_size_str = 'test_set_size: [%s]' % ', '.join([str(size) for size in test_set_size])
-        acc_str = 'Task: %d: avg_acc: %.3f, whole_acc: %.3f' % (task_index + 1, avg_result, whole_result)
-        print(test_set_size_str)
-        print(acc_str)
-        append_log(opt.log_file, ', '.join(['%.3f' % r for r in results]))
-        append_log(opt.log_file, test_set_size_str)
-        append_log(opt.log_file, acc_str)
-
-    print('test_all:')
-    best_avg_acc = 0.0
-    best_whole_acc = 0.0
-    for epoch in range(10):
-        current_test_data = []
-        for previous_task_id in range(opt.task_num):
-            current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations))
-
-        loss_function = nn.MarginRankingLoss(opt.loss_margin)
-        optimizer = optim.Adam(inner_model.parameters(), lr=opt.learning_rate)
-        optimizer.zero_grad()
-        for one_batch_memory in memory_data:
-            scores, loss = feed_samples(inner_model, one_batch_memory, loss_function, relation_numbers, device)
-            optimizer.step()
         results = [evaluate_model(inner_model, test_data, opt.batch_size, relation_numbers, device)
-                   for test_data in current_test_data]
+                           for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
+
         print(results)
-        avg_result = sum(results) / len(results)
-        test_set_size = [len(testdata) for testdata in current_test_data]
-        whole_result = sum([results[i] * test_set_size[i] for i in range(len(current_test_data))]) / sum(test_set_size)
-        print('test_set_size: [%s]' % ', '.join([str(size) for size in test_set_size]))
-        print('avg_acc: %.3f, whole_acc: %.3f' % (avg_result, whole_result))
-        if avg_result > best_avg_acc: best_avg_acc = avg_result
-        if whole_result > best_whole_acc: best_whole_acc = whole_result
-    append_log(opt.log_file, 'after fine-tuning: avg_acc: %.3f, whole_acc: %.3f' % (best_avg_acc, best_whole_acc))
 
 
+
+#
+#         weights_before = deepcopy(inner_model.state_dict())
+#
+#         train_task = split_train_data[task_index]
+#         test_task = split_test_data[task_index]
+#         valid_task = split_valid_data[task_index]
+#
+#         # collect seen relations
+#         for data_item in train_task:
+#             if data_item[0] not in seen_relations:
+#                 seen_relations.append(data_item[0])
+#
+#         # remove unseen relations
+#         current_train_data = remove_unseen_relation(train_task, seen_relations)
+#         current_valid_data = remove_unseen_relation(valid_task, seen_relations)
+#         current_test_data = []
+#         for previous_task_id in range(task_index + 1):
+#             current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations))
+#
+#         # train inner_model
+#         loss_function = nn.MarginRankingLoss(opt.loss_margin)
+#         inner_model = inner_model.to(device)
+#         optimizer = optim.Adam(inner_model.parameters(), lr=opt.learning_rate)
+#         t = tqdm(range(opt.outside_epoch))
+#         best_valid_acc = 0.0
+#         early_stop = 0
+#         best_checkpoint = ''
+#         for epoch in t:
+#             batch_num = (len(current_train_data) - 1) // opt.batch_size + 1
+#             total_loss = 0.0
+#             for batch in range(batch_num):
+#                 batch_train_data = current_train_data[batch * opt.batch_size: (batch + 1) * opt.batch_size]
+#
+#                 if len(memory_data) > 0:
+#                     all_seen_data = []
+#                     for one_batch_memory in memory_data:
+#                         all_seen_data += one_batch_memory
+#
+#                     memory_batch = memory_data[memory_index]
+#                     batch_train_data.extend(memory_batch)
+#                     # scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
+#                     # optimizer.step()
+#                     memory_index = (memory_index+1) % len(memory_data)
+#                 # random.shuffle(batch_train_data)
+#                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
+#                 optimizer.step()
+#                 total_loss += loss
+#
+#             # valid test
+#             valid_acc = evaluate_model(inner_model, current_valid_data, opt.batch_size, relation_numbers, device)
+#             # checkpoint
+#             checkpoint = {'net_state': inner_model.state_dict(), 'optimizer': optimizer.state_dict()}
+#             if valid_acc > best_valid_acc:
+#                 best_checkpoint = './checkpoint/checkpoint_task%d_epoch%d.pth.tar' % (task_index, epoch)
+#                 torch.save(checkpoint, best_checkpoint)
+#                 best_valid_acc = valid_acc
+#                 early_stop = 0
+#             else:
+#                 early_stop += 1
+#
+#             # print()
+#             t.set_description('Task %i Epoch %i' % (task_index+1, epoch+1))
+#             t.set_postfix(loss=total_loss.item(), valid_acc=valid_acc, early_stop=early_stop, best_checkpoint=best_checkpoint)
+#             t.update(1)
+#
+#             if early_stop >= opt.early_stop:
+#                 # 已经充分训练了
+#                 break
+#         t.close()
+#         print('Load best check point from %s' % best_checkpoint)
+#         checkpoint = torch.load(best_checkpoint)
+#
+#         weights_after = checkpoint['net_state']
+#
+#
+#         # weights_after = inner_model.state_dict()  # 经过inner_epoch轮次的梯度更新后weights
+#         outer_step_size = opt.step_size * (1 - task_index / opt.task_num)  # linear schedule
+#         # outer_step_size = opt.step_size * 0.9
+#         inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outer_step_size
+#                                for name in weights_before})
+#
+#         # 用memory进行训练：
+#         # for i in range(5):
+#         #     for one_batch_memory in memory_data:
+#         #         scores, loss = feed_samples(inner_model, one_batch_memory, loss_function, relation_numbers, device)
+#         #         optimizer.step()
+#
+#
+#         results = [evaluate_model(inner_model, test_data, opt.batch_size, relation_numbers, device)
+#                    for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
+#
+#         # sample memory from current_train_data
+#         if opt.memory_select_method == 'random':
+#             memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size / results[-1])))
+#         elif opt.memory_select_method == 'vec_cluster':
+#             memory_data.append(select_data(inner_model, current_train_data, int(opt.task_memory_size / results[-1]),
+#                                            relation_numbers, opt.batch_size, device))  # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
+#         elif opt.memory_select_method == 'difficulty':
+#             memory_data.append()
+#
+#         # 用所有memory先训练一次
+#         # for i in range(2):
+#
+#
+#
+#         print_list(results)
+#         avg_result = sum(results) / len(results)
+#         test_set_size = [len(testdata) for testdata in current_test_data]
+#         whole_result = sum([results[i] * test_set_size[i] for i in range(len(current_test_data))]) / sum(test_set_size)
+#         print('test_set_size: [%s]' % ', '.join([str(size) for size in test_set_size]))
+#         print('avg_acc: %.3f, whole_acc: %.3f' % (avg_result, whole_result))
+#
+#
+#
+#
+#
+#
+#
+#
+#     # if opt.meta_method == 'reptile':
+#     #     # use reptile to train model
+#     #
+#     # elif opt.meta_method == 'maml':
+#     #     # use reptile to train model, wait implement
+#     #     pass
+#     # else:
+#     #     raise Exception('meta method %s not implement' % opt.meta_method)
+#
+#
+#
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--cuda_id', default=0, type=int,
-                        help='cuda device index, -1 means use cpu')
-    parser.add_argument('--train_file', default='dataset/training_data.txt',
-                        help='train file')
-    parser.add_argument('--valid_file', default='dataset/val_data.txt',
-                        help='valid file')
-    parser.add_argument('--test_file', default='dataset/val_data.txt',
-                        help='test file')
-    parser.add_argument('--relation_file', default='dataset/relation_name.txt',
-                        help='relation name file')
-    parser.add_argument('--glove_file', default='dataset/glove.6B.300d.txt',
-                        help='glove embedding file')
-    parser.add_argument('--kl_dist_file', default='dataset/kl_dist_ht.json',
-                        help='glove embedding file')
-    parser.add_argument('--embedding_dim', default=300, type=int,
-                        help='word embeddings dimensional')
-    parser.add_argument('--hidden_dim', default=200, type=int,
-                        help='BiLSTM hidden dimensional')
-    parser.add_argument('--task_arrange', default='cluster_by_glove_embedding',
-                        help='task arrangement method, e.g. cluster_by_glove_embedding, random')
-    parser.add_argument('--rel_encode', default='glove',
-                        help='relation encode method')
-    parser.add_argument('--meta_method', default='reptile',
-                        help='meta learning method, maml and reptile can be choose')
-    parser.add_argument('--batch_size', default=50, type=float,
-                        help='Reptile inner loop batch size')
-    parser.add_argument('--task_num', default=10, type=int,
-                        help='number of tasks')
-    parser.add_argument('--train_instance_num', default=200, type=int,
-                        help='number of instances for one relation, -1 means all.')
-    parser.add_argument('--loss_margin', default=0.5, type=float,
-                        help='loss margin setting')
-    parser.add_argument('--outside_epoch', default=50, type=float,
-                        help='task level epoch')
-    parser.add_argument('--early_stop', default=10, type=float,
-                        help='task level epoch')
-    parser.add_argument('--step_size', default=0.7, type=float,
-                        help='step size Epsilon')
-    parser.add_argument('--learning_rate', default=2e-3, type=float,
-                        help='learning rate')
-    parser.add_argument('--random_seed', default=317, type=int,
-                        help='random seed')
-    parser.add_argument('--task_memory_size', default=50, type=int,
-                        help='number of samples for each task')
-    parser.add_argument('--outer_step_formula', default='square_root',
-                        help='outer step formula: linear, fixed, square_root')
-    parser.add_argument('--memory_select_method', default='vec_cluster',
-                        help='the method of sample memory data, e.g. vec_cluster, random, difficulty')
-    parser.add_argument('--sampled_rel_num', default=3,
-                        help='relation sampled number for current training relation')
-    parser.add_argument('--sampled_instance_num', default=6,
-                        help='instance sampled number for a sampled relation, total sampled 6 * 80 instances ')
-    parser.add_argument('--is_few_shot', default='N',
-                        help='if open few shot experiment after few_shot_after task, N or Y')
-    parser.add_argument('--few_shot_k', default=5,
-                        help='few shot k instance sampled')
-    parser.add_argument('--few_shot_after', default=7,
-                        help='few shot start after few_shot_after tasks')
-
-    parser.add_argument('--log_file', default='results/res.txt',
-                        help='file to save the results')
-
-
-    opt = parser.parse_args()
-
-    main(opt)
-    # # phase 1: adapt hyper-parameters：learning_rate, outer_step_formula, step_size
-    #
-    # learning_rate = [1e-3]  # , 2e-3, 5e-3, 1e-2]
-    # outer_step_formula = ['fixed']  # , 'linear', 'square_root']
-    # step_size = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-    # step_size_fixed = [4]  #[3, 4, 5, 6, 7, 8]
-    # hyper_parameter_combinations = []
-    #
-    # for lr in learning_rate:
-    #     for osf in outer_step_formula:
-    #         if osf == 'fixed':
-    #             _step_size = step_size_fixed
-    #         else:
-    #             _step_size = step_size
-    #         for ss in _step_size:
-    #             hyper_parameter_combinations.append([lr, osf, ss])
-    #
-    # # curriculum_rel_num = [1, 3, 5]
-    # # curriculum_instance_num = [1, 3, 5, 10]
-    #
-    # for hyper_parameter in hyper_parameter_combinations:
-    #     append_log(opt.log_file, '\t'.join([str(hp) for hp in hyper_parameter]))
-    #     # opt.curriculum_rel_num = hyper_parameter[0]
-    #     # opt.curriculum_instance_num = hyper_parameter[1]
-    #     opt.learning_rate = hyper_parameter[0]
-    #     opt.outer_step_formula = hyper_parameter[1]
-    #     opt.step_size = hyper_parameter[2]
-    #
-    #     # print(opt)
-    #
-    #     main(opt)
+    main()
