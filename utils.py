@@ -155,3 +155,8 @@ def ranking_sequence(sequence):
     #print(indexs)
     sequence = [sequence[i] for i in indexs]
     return sequence, inverse_indexs
+
+def append_log(file_name, line):
+    with open(file_name, 'a+') as f:
+        f.writelines(line + '\n')
+        f.flush()
