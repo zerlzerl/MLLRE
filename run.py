@@ -183,7 +183,8 @@ def main():
     device = torch.device(('cuda:%d' % opt.cuda_id) if torch.cuda.is_available() and opt.cuda_id >= 0 else 'cpu')
 
     # do following process
-    split_train_data, split_test_data, split_valid_data, relation_numbers, rel_features, vocabulary, embedding = \
+    split_train_data, train_data_dict, split_test_data, split_valid_data, relation_numbers, rel_features, \
+    split_train_relation, vocabulary, embedding = \
         load_data(opt.train_file, opt.valid_file, opt.test_file, opt.relation_file, opt.glove_file,
                   opt.embedding_dim, opt.task_arrange, opt.rel_encode, opt.task_num,
                   opt.train_instance_num)

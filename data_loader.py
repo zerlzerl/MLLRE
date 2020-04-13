@@ -202,21 +202,26 @@ def random_split_relation(task_num, relation_dict):
 
 def split_data(data, vocabulary, rel2cluster, task_num, instance_num=-1):  # -1 means all
     separated_data = [None] * task_num
+    separated_relation = [None] * task_num
     for rel, items in data.items():
         rel_culter = rel2cluster[rel]
-        if instance_num > 0 :
-            selected_samples = random.sample(items, instance_num)
-        else:
-            selected_samples = items[:]
+        items = transform_questions(items, vocabulary)
+        if instance_num > 0:
+            items = random.sample(items, instance_num)
+            data[rel] = items
 
         if separated_data[rel_culter] is None:
-            separated_data[rel_culter] = selected_samples
+            separated_data[rel_culter] = []
+            separated_data[rel_culter].extend(items)
         else:
-            separated_data[rel_culter].extend(selected_samples)
+            separated_data[rel_culter].extend(items)
 
-    for i in range(len(separated_data)):
-        separated_data[i] = transform_questions(separated_data[i], vocabulary)
-    return separated_data
+        if separated_relation[rel_culter] is None:
+            separated_relation[rel_culter] = [rel]
+        else:
+            separated_relation[rel_culter].append(rel)
+
+    return separated_data, separated_relation
 
 def split_relation(relation):
     word_list = []
@@ -292,8 +297,9 @@ def load_data(train_file, valid_file, test_file, relation_file, glove_file, embe
     else:
         raise Exception('task arrangement method %s not implement' % task_arrange)
 
-    split_train_data = split_data(train_data_dict, vocabulary, rel2cluster, task_num, instance_num)
-    split_test_data = split_data(test_data_dict, vocabulary, rel2cluster, task_num)
-    split_valid_data = split_data(valid_data_dict, vocabulary, rel2cluster, task_num)
+    split_train_data, split_train_relation = split_data(train_data_dict, vocabulary, rel2cluster, task_num, instance_num)
+    split_test_data, split_test_relation = split_data(test_data_dict, vocabulary, rel2cluster, task_num)
+    split_valid_data, split_valid_relation = split_data(valid_data_dict, vocabulary, rel2cluster, task_num)
 
-    return split_train_data, split_test_data, split_valid_data, relation_numbers, rel_features, vocabulary, embedding
+    return split_train_data, train_data_dict, split_test_data, split_valid_data, relation_numbers, rel_features, \
+           split_train_relation, vocabulary, embedding
