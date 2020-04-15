@@ -1,3 +1,4 @@
+import math
 import sys
 
 from tqdm import tqdm
@@ -122,11 +123,16 @@ def print_list(result):
         sys.stdout.write('%.3f, ' %num)
     print('')
 
-
+def update_rel_cands(memory_data, all_seen_cands, num_cands):
+    if len(memory_data) >0:
+        for this_memory in memory_data:
+            for sample in this_memory:
+                valid_rels = [rel for rel in all_seen_cands if rel!=sample[0]]
+                sample[1] = random.sample(valid_rels, min(num_cands, len(valid_rels)))
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cuda_id', default=0, type=int,
+    parser.add_argument('--cuda_id', default=1, type=int,
                         help='cuda device index, -1 means use cpu')
     parser.add_argument('--train_file', default='dataset/training_data.txt',
                         help='train file')
@@ -148,6 +154,8 @@ def main():
                         help='relation encode method')
     parser.add_argument('--meta_method', default='reptile',
                         help='meta learning method, maml and reptile can be choose')
+    parser.add_argument('--num_cands', default=10, type=int,
+                        help='candidate negative relation numbers in memory')
     parser.add_argument('--batch_size', default=50, type=float,
                         help='Reptile inner loop batch size')
     parser.add_argument('--task_num', default=10, type=int,
@@ -160,8 +168,10 @@ def main():
                         help='task level epoch')
     parser.add_argument('--early_stop', default=10, type=float,
                         help='task level epoch')
-    parser.add_argument('--step_size', default=0.6, type=float,
+    parser.add_argument('--step_size', default=0.4, type=float,
                         help='step size Epsilon')
+    parser.add_argument('--outer_step_formula', default='square_root', type=str,
+                        help='outer step formula, fixed, linear, square_root')
     parser.add_argument('--learning_rate', default=2e-3, type=float,
                         help='learning rate')
     parser.add_argument('--random_seed', default=317, type=int,
@@ -169,12 +179,21 @@ def main():
     parser.add_argument('--task_memory_size', default=50, type=int,
                         help='number of samples for each task')
     parser.add_argument('--memory_select_method', default='vec_cluster',
-                        help='the method of sample memory data, e.g. vec_cluster, random, difficulty')
-
-
+                        help='the method of sample memory data, e.g. vec_cluster, random, difficulty, select_for_relation, select_for_task')
+    parser.add_argument('--is_curriculum_train', default='N',
+                        help='when training with memory, this will control if relations are curriculumly sampled.')
+    parser.add_argument('--sampled_rel_num', default=5,
+                        help='relation sampled number for current training relation')
+    parser.add_argument('--sampled_instance_num', default=6,
+                        help='instance sampled number for a sampled relation, total sampled 6 * 80 instances ')
+    parser.add_argument('--sampled_instance_num_total', default=50,
+                        help='instance sampled number for a task, total sampled 50 instances ')
+    parser.add_argument('--kl_dist_file', default='dataset/kl_dist_ht.json',
+                        help='glove embedding file')
 
     opt = parser.parse_args()
     print(opt)
+    print('线性outer step formula，0.6 step size， 每task聚类取50个memo')
     random.seed(opt.random_seed)
     torch.manual_seed(opt.random_seed)
     np.random.seed(opt.random_seed)
@@ -184,10 +203,18 @@ def main():
 
     # do following process
     split_train_data, train_data_dict, split_test_data, split_valid_data, relation_numbers, rel_features, \
-    split_train_relation, vocabulary, embedding = \
+    split_train_relations, vocabulary, embedding = \
         load_data(opt.train_file, opt.valid_file, opt.test_file, opt.relation_file, opt.glove_file,
                   opt.embedding_dim, opt.task_arrange, opt.rel_encode, opt.task_num,
                   opt.train_instance_num)
+
+    # kl similarity of the joint distribution of head and tail
+    kl_dist_ht = read_json(opt.kl_dist_file)
+
+    # tmp = [[0, 1, 2, 3], [1, 0, 4, 6], [2, 4, 0, 5], [3, 6, 5, 0]]
+    sorted_sililarity_index = np.argsort(np.asarray(kl_dist_ht), axis=1) + 1
+
+
     # prepare model
     inner_model = SimilarityModel(opt.embedding_dim, opt.hidden_dim, len(vocabulary),
                                   np.array(embedding), 1, device)
@@ -199,6 +226,7 @@ def main():
     result_whole_test = []
     seen_relations = []
     all_seen_relations = []
+    rel2instance_memory = {}
     memory_index = 0
     for task_index in range(opt.task_num):  # outside loop
         # reptile start model parameters pi
@@ -207,6 +235,7 @@ def main():
         train_task = split_train_data[task_index]
         test_task = split_test_data[task_index]
         valid_task = split_valid_data[task_index]
+        train_relations = split_train_relations[task_index]
 
         # collect seen relations
         for data_item in train_task:
@@ -219,6 +248,12 @@ def main():
         current_test_data = []
         for previous_task_id in range(task_index + 1):
             current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations))
+
+        for this_sample in current_train_data:
+            if this_sample[0] not in all_seen_relations:
+                all_seen_relations.append(this_sample[0])
+
+        update_rel_cands(memory_data, all_seen_relations, opt.num_cands)
 
         # train inner_model
         loss_function = nn.MarginRankingLoss(opt.loss_margin)
@@ -245,6 +280,38 @@ def main():
                     # optimizer.step()
                     memory_index = (memory_index+1) % len(memory_data)
                 # random.shuffle(batch_train_data)
+                if len(rel2instance_memory) > 0:  # from the second task, this will not be empty
+                    if opt.is_curriculum_train == 'True':
+                        current_train_rel = batch_train_data[0][0]
+                        current_rel_similarity_sorted_index = sorted_sililarity_index[current_train_rel + 1]
+                        seen_relation_sorted_index = []
+                        for rel in current_rel_similarity_sorted_index:
+                            if rel in rel2instance_memory.keys():
+                                seen_relation_sorted_index.append(rel)
+
+                        curriculum_rel_list = []
+                        if opt.sampled_rel_num >= len(seen_relation_sorted_index):
+                            curriculum_rel_list = seen_relation_sorted_index[:]
+                        else:
+                            step = len(seen_relation_sorted_index) // opt.sampled_rel_num
+                            for i in range(0, len(seen_relation_sorted_index), step):
+                                curriculum_rel_list.append(seen_relation_sorted_index[i])
+
+                        # curriculum select relation
+                        instance_list = []
+                        for sampled_relation in curriculum_rel_list:
+                            instance_list.extend(rel2instance_memory[sampled_relation])
+                    else:
+                        # randomly select relation
+                        instance_list = []
+                        curriculum_relation_list = random.sample(list(rel2instance_memory.keys()), opt.sampled_rel_num)
+                        for sampled_relation in curriculum_relation_list:
+                            instance_list.extend(rel2instance_memory[sampled_relation])
+
+                    # curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
+                    scores, loss = feed_samples(inner_model, instance_list, loss_function, relation_numbers, device)
+                    optimizer.step()
+
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
                 optimizer.step()
                 total_loss += loss
@@ -275,13 +342,17 @@ def main():
 
         weights_after = checkpoint['net_state']
 
-
         # weights_after = inner_model.state_dict()  # 经过inner_epoch轮次的梯度更新后weights
-        if task_index == opt.task_num - 1:
-            outer_step_size = opt.step_size * (1 - 5 / opt.task_num)
-        else:
-            outer_step_size = opt.step_size * (1 - task_index / opt.task_num)  # linear schedule
-        # outer_step_size = opt.step_size * 0.9
+        # outer_step_size = opt.step_size * (1 - task_index / opt.task_num)  # linear schedule
+        # if outer_step_size < opt.step_size * 0.5:
+        #     outer_step_size = opt.step_size * 0.5
+
+        if opt.outer_step_formula == 'fixed':
+            outer_step_size = opt.step_size
+        elif opt.outer_step_formula == 'linear':
+            outer_step_size = opt.step_size * (1 - task_index / opt.task_num)
+        elif opt.outer_step_formula == 'square_root':
+            outer_step_size = math.sqrt(opt.step_size * (1 - task_index / opt.task_num))
         # outer_step_size = 0.4
         inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outer_step_size
                                      for name in weights_before})
@@ -297,13 +368,32 @@ def main():
                    for test_data in current_test_data]  # 使用current model和alignment model对test data进行一个预测
 
         # sample memory from current_train_data
-        if opt.memory_select_method == 'random':
-            memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size / results[-1])))
-        elif opt.memory_select_method == 'vec_cluster':
-            memory_data.append(select_data(inner_model, current_train_data, int(opt.task_memory_size / results[-1]),
-                                           relation_numbers, opt.batch_size, device))  # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
-        elif opt.memory_select_method == 'difficulty':
-            memory_data.append()
+        if opt.memory_select_method == 'select_for_relation':
+            # 每个关系sample k个
+            for rel in train_relations:
+                rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations)
+                rel_memo = select_data(inner_model, rel_items, int(opt.sampled_instance_num),
+                                       relation_numbers, opt.batch_size, device)
+                rel2instance_memory[rel] = rel_memo
+
+        if opt.memory_select_method == 'select_for_task':
+            # 为每个task sample k个
+            rel_instance_num = math.ceil(opt.sampled_instance_num_total / len(train_relations))
+            for rel in train_relations:
+                rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations)
+                rel_memo = select_data(inner_model, rel_items, int(rel_instance_num),
+                                       relation_numbers, opt.batch_size, device)
+                rel2instance_memory[rel] = rel_memo
+
+        if opt.task_memory_size > 0:
+            # sample memory from current_train_data
+            if opt.memory_select_method == 'random':
+                memory_data.append(random_select_data(current_train_data, int(opt.task_memory_size)))
+            elif opt.memory_select_method == 'vec_cluster':
+                memory_data.append(select_data(inner_model, current_train_data, int(opt.task_memory_size),
+                                               relation_numbers, opt.batch_size, device))  # memorydata是一个list，list中的每个元素都是一个包含selected_num个sample的list
+            elif opt.memory_select_method == 'difficulty':
+                memory_data.append()
 
         # 用所有memory先训练一次
         # for i in range(2):
