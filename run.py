@@ -130,68 +130,8 @@ def update_rel_cands(memory_data, all_seen_cands, num_cands):
                 valid_rels = [rel for rel in all_seen_cands if rel!=sample[0]]
                 sample[1] = random.sample(valid_rels, min(num_cands, len(valid_rels)))
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--cuda_id', default=1, type=int,
-                        help='cuda device index, -1 means use cpu')
-    parser.add_argument('--train_file', default='dataset/training_data.txt',
-                        help='train file')
-    parser.add_argument('--valid_file', default='dataset/val_data.txt',
-                        help='valid file')
-    parser.add_argument('--test_file', default='dataset/val_data.txt',
-                        help='test file')
-    parser.add_argument('--relation_file', default='dataset/relation_name.txt',
-                        help='relation name file')
-    parser.add_argument('--glove_file', default='dataset/glove.6B.300d.txt',
-                        help='glove embedding file')
-    parser.add_argument('--embedding_dim', default=300, type=int,
-                        help='word embeddings dimensional')
-    parser.add_argument('--hidden_dim', default=200, type=int,
-                        help='BiLSTM hidden dimensional')
-    parser.add_argument('--task_arrange', default='cluster_by_glove_embedding',
-                        help='task arrangement method, e.g. cluster_by_glove_embedding, random')
-    parser.add_argument('--rel_encode', default='glove',
-                        help='relation encode method')
-    parser.add_argument('--meta_method', default='reptile',
-                        help='meta learning method, maml and reptile can be choose')
-    parser.add_argument('--num_cands', default=10, type=int,
-                        help='candidate negative relation numbers in memory')
-    parser.add_argument('--batch_size', default=50, type=float,
-                        help='Reptile inner loop batch size')
-    parser.add_argument('--task_num', default=10, type=int,
-                        help='number of tasks')
-    parser.add_argument('--train_instance_num', default=200, type=int,
-                        help='number of instances for one relation, -1 means all.')
-    parser.add_argument('--loss_margin', default=0.5, type=float,
-                        help='loss margin setting')
-    parser.add_argument('--outside_epoch', default=200, type=float,
-                        help='task level epoch')
-    parser.add_argument('--early_stop', default=10, type=float,
-                        help='task level epoch')
-    parser.add_argument('--step_size', default=0.4, type=float,
-                        help='step size Epsilon')
-    parser.add_argument('--outer_step_formula', default='square_root', type=str,
-                        help='outer step formula, fixed, linear, square_root')
-    parser.add_argument('--learning_rate', default=2e-3, type=float,
-                        help='learning rate')
-    parser.add_argument('--random_seed', default=317, type=int,
-                        help='random seed')
-    parser.add_argument('--task_memory_size', default=50, type=int,
-                        help='number of samples for each task')
-    parser.add_argument('--memory_select_method', default='vec_cluster',
-                        help='the method of sample memory data, e.g. vec_cluster, random, difficulty, select_for_relation, select_for_task')
-    parser.add_argument('--is_curriculum_train', default='N',
-                        help='when training with memory, this will control if relations are curriculumly sampled.')
-    parser.add_argument('--sampled_rel_num', default=5,
-                        help='relation sampled number for current training relation')
-    parser.add_argument('--sampled_instance_num', default=6,
-                        help='instance sampled number for a sampled relation, total sampled 6 * 80 instances ')
-    parser.add_argument('--sampled_instance_num_total', default=50,
-                        help='instance sampled number for a task, total sampled 50 instances ')
-    parser.add_argument('--kl_dist_file', default='dataset/kl_dist_ht.json',
-                        help='glove embedding file')
+def main(opt):
 
-    opt = parser.parse_args()
     print(opt)
     print('线性outer step formula，0.6 step size， 每task聚类取50个memo')
     random.seed(opt.random_seed)
@@ -281,7 +221,7 @@ def main():
                     memory_index = (memory_index+1) % len(memory_data)
                 # random.shuffle(batch_train_data)
                 if len(rel2instance_memory) > 0:  # from the second task, this will not be empty
-                    if opt.is_curriculum_train == 'True':
+                    if opt.is_curriculum_train == 'Y':
                         current_train_rel = batch_train_data[0][0]
                         current_rel_similarity_sorted_index = sorted_sililarity_index[current_train_rel + 1]
                         seen_relation_sorted_index = []
@@ -300,17 +240,29 @@ def main():
                         # curriculum select relation
                         instance_list = []
                         for sampled_relation in curriculum_rel_list:
-                            instance_list.extend(rel2instance_memory[sampled_relation])
+                            if opt.mini_batch_split == 'Y':
+                                instance_list.append(rel2instance_memory[sampled_relation])
+                            else:
+                                instance_list.extend(rel2instance_memory[sampled_relation])
                     else:
                         # randomly select relation
                         instance_list = []
-                        curriculum_relation_list = random.sample(list(rel2instance_memory.keys()), opt.sampled_rel_num)
-                        for sampled_relation in curriculum_relation_list:
-                            instance_list.extend(rel2instance_memory[sampled_relation])
+                        random_relation_list = random.sample(list(rel2instance_memory.keys()), opt.sampled_rel_num)
+                        for sampled_relation in random_relation_list:
+                            if opt.mini_batch_split == 'Y':
+                                instance_list.append(rel2instance_memory[sampled_relation])
+                            else:
+                                instance_list.extend(rel2instance_memory[sampled_relation])
 
-                    # curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
-                    scores, loss = feed_samples(inner_model, instance_list, loss_function, relation_numbers, device)
-                    optimizer.step()
+                    if opt.mini_batch_split == 'Y':
+                        for one_batch_instance in instance_list:
+                            # curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
+                            scores, loss = feed_samples(inner_model, one_batch_instance, loss_function, relation_numbers, device)
+                            optimizer.step()
+                    else:
+                        # curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
+                        scores, loss = feed_samples(inner_model, instance_list, loss_function, relation_numbers, device)
+                        optimizer.step()
 
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
                 optimizer.step()
@@ -321,7 +273,9 @@ def main():
             # checkpoint
             checkpoint = {'net_state': inner_model.state_dict(), 'optimizer': optimizer.state_dict()}
             if valid_acc > best_valid_acc:
-                best_checkpoint = './checkpoint/checkpoint_task%d_epoch%d.pth.tar' % (task_index, epoch)
+                best_checkpoint = '%s/checkpoint_task%d_epoch%d.pth.tar' % (opt.checkpoint_dir, task_index + 1, epoch)
+                if not os.path.exists(opt.checkpoint_dir):
+                    os.makedirs(opt.checkpoint_dir)
                 torch.save(checkpoint, best_checkpoint)
                 best_valid_acc = valid_acc
                 early_stop = 0
@@ -381,7 +335,7 @@ def main():
             rel_instance_num = math.ceil(opt.sampled_instance_num_total / len(train_relations))
             for rel in train_relations:
                 rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations)
-                rel_memo = select_data(inner_model, rel_items, int(rel_instance_num),
+                rel_memo = select_data(inner_model, rel_items, rel_instance_num,
                                        relation_numbers, opt.batch_size, device)
                 rel2instance_memory[rel] = rel_memo
 
@@ -444,4 +398,128 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cuda_id', default=0, type=int,
+                        help='cuda device index, -1 means use cpu')
+    parser.add_argument('--train_file', default='dataset/training_data.txt',
+                        help='train file')
+    parser.add_argument('--valid_file', default='dataset/val_data.txt',
+                        help='valid file')
+    parser.add_argument('--test_file', default='dataset/val_data.txt',
+                        help='test file')
+    parser.add_argument('--relation_file', default='dataset/relation_name.txt',
+                        help='relation name file')
+    parser.add_argument('--glove_file', default='dataset/glove.6B.300d.txt',
+                        help='glove embedding file')
+    parser.add_argument('--embedding_dim', default=300, type=int,
+                        help='word embeddings dimensional')
+    parser.add_argument('--hidden_dim', default=200, type=int,
+                        help='BiLSTM hidden dimensional')
+    parser.add_argument('--task_arrange', default='cluster_by_glove_embedding',
+                        help='task arrangement method, e.g. cluster_by_glove_embedding, random')
+    parser.add_argument('--rel_encode', default='glove',
+                        help='relation encode method')
+    parser.add_argument('--meta_method', default='reptile',
+                        help='meta learning method, maml and reptile can be choose')
+    parser.add_argument('--num_cands', default=10, type=int,
+                        help='candidate negative relation numbers in memory')
+    parser.add_argument('--batch_size', default=50, type=float,
+                        help='Reptile inner loop batch size')
+    parser.add_argument('--task_num', default=10, type=int,
+                        help='number of tasks')
+    parser.add_argument('--train_instance_num', default=200, type=int,
+                        help='number of instances for one relation, -1 means all.')
+    parser.add_argument('--loss_margin', default=0.5, type=float,
+                        help='loss margin setting')
+    parser.add_argument('--outside_epoch', default=200, type=float,
+                        help='task level epoch')
+    parser.add_argument('--early_stop', default=10, type=float,
+                        help='task level epoch')
+    parser.add_argument('--step_size', default=0.4, type=float,
+                        help='step size Epsilon')
+    parser.add_argument('--outer_step_formula', default='square_root', type=str,
+                        help='outer step formula, fixed, linear, square_root')
+    parser.add_argument('--learning_rate', default=2e-3, type=float,
+                        help='learning rate')
+    parser.add_argument('--random_seed', default=317, type=int,
+                        help='random seed')
+    parser.add_argument('--task_memory_size', default=0, type=int,
+                        help='number of samples for each task')
+    parser.add_argument('--memory_select_method', default='select_for_relation',
+                        help='the method of sample memory data, e.g. vec_cluster, random, difficulty, select_for_relation, select_for_task')
+    parser.add_argument('--is_curriculum_train', default='Y',
+                        help='when training with memory, this will control if relations are curriculumly sampled.')
+    parser.add_argument('--mini_batch_split', default='N',
+                        help='whether mini-batch split into sampled_rel_num batches, Y or N')
+    parser.add_argument('--checkpoint_dir', default='./checkpoint',
+                        help='check point dir')
+    parser.add_argument('--sampled_rel_num', default=5,
+                        help='relation sampled number for current training relation')
+    parser.add_argument('--sampled_instance_num', default=6,
+                        help='instance sampled number for a sampled relation, total sampled 6 * 80 instances ')
+    parser.add_argument('--sampled_instance_num_total', default=50,
+                        help='instance sampled number for a task, total sampled 50 instances ')
+    parser.add_argument('--kl_dist_file', default='dataset/kl_dist_ht.json',
+                        help='glove embedding file')
+    parser.add_argument('--index', default=2, type=int,
+                        help='experiment index')
+
+    opt = parser.parse_args()
+
+    if opt.index == 2:
+        opt.cuda_id = 0
+        opt.memory_select_method = 'select_for_task'
+        opt.is_curriculum_train = 'N'
+        opt.mini_batch_split = 'N'
+        opt.checkpoint_dir = './checkpoint/2'
+
+    if opt.index == 3:
+        opt.cuda_id = 0
+        opt.memory_select_method = 'select_for_task'
+        opt.is_curriculum_train = 'N'
+        opt.mini_batch_split = 'Y'
+        opt.checkpoint_dir = './checkpoint/3'
+
+    if opt.index == 4:
+        opt.cuda_id = 0
+        opt.memory_select_method = 'select_for_task'
+        opt.is_curriculum_train = 'Y'
+        opt.mini_batch_split = 'N'
+        opt.checkpoint_dir = './checkpoint/4'
+
+    if opt.index == 5:
+        opt.cuda_id = 0
+        opt.memory_select_method = 'select_for_task'
+        opt.is_curriculum_train = 'Y'
+        opt.mini_batch_split = 'Y'
+        opt.checkpoint_dir = './checkpoint/5'
+
+    if opt.index == 6:
+        opt.cuda_id = 1
+        opt.memory_select_method = 'select_for_relation'
+        opt.is_curriculum_train = 'N'
+        opt.mini_batch_split = 'N'
+        opt.checkpoint_dir = './checkpoint/6'
+
+    if opt.index == 7:
+        opt.cuda_id = 1
+        opt.memory_select_method = 'select_for_relation'
+        opt.is_curriculum_train = 'N'
+        opt.mini_batch_split = 'Y'
+        opt.checkpoint_dir = './checkpoint/7'
+
+    if opt.index == 8:
+        opt.cuda_id = 1
+        opt.memory_select_method = 'select_for_relation'
+        opt.is_curriculum_train = 'Y'
+        opt.mini_batch_split = 'N'
+        opt.checkpoint_dir = './checkpoint/8'
+
+    if opt.index == 9:
+        opt.cuda_id = 1
+        opt.memory_select_method = 'select_for_relation'
+        opt.is_curriculum_train = 'Y'
+        opt.mini_batch_split = 'Y'
+        opt.checkpoint_dir = './checkpoint/9'
+
+    main(opt)
