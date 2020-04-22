@@ -120,7 +120,7 @@ def process_testing_samples(sample_list, all_relations, device):
         #print(relations[sample[0]])
         #print(sample)
         gold_relation_indexs.append(sample[0])
-        neg_relations = [torch.tensor(all_relations[index],
+        neg_relations = [torch.tensor(all_relations[index - 1],
                                       dtype=torch.long).to(device)
                          for index in sample[1]]
         relation_set_lengths.append(len(neg_relations))
@@ -137,9 +137,9 @@ def process_samples(sample_list, all_relations, device):
         question = torch.tensor(sample[2], dtype=torch.long).to(device)
         #print(relations[sample[0]])
         #print(sample)
-        pos_relation = torch.tensor(all_relations[sample[0]],
+        pos_relation = torch.tensor(all_relations[sample[0] - 1],
                                     dtype=torch.long).to(device)  # 正确关系的tensor，一维数组
-        neg_relations = [torch.tensor(all_relations[index],
+        neg_relations = [torch.tensor(all_relations[index - 1],
                                       dtype=torch.long).to(device)
                          for index in sample[1]]  # 候选的错误关系tensor
         relation_set_lengths.append(len(neg_relations)+1)

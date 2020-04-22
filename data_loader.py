@@ -50,10 +50,10 @@ def read_relation(file_path):
 
     with open(file_path, 'r', encoding='utf8') as f:
         relation_list = []
-        relation_list.append('/fill/fill/fill')
+        # relation_list.append('/fill/fill/fill')
         index = 1
         relation_dict = {}
-        relation_dict['/fill/fill/fill'] = 0
+        # relation_dict['/fill/fill/fill'] = 0
         for line in f:
             relation_name = remove_return_sym(line)
             relation_list.append(relation_name)
@@ -262,13 +262,88 @@ def cluster_data_by_glove(task_num, rel_features):
     label = cluster.labels_
     rel2label = {}
     for index in range(len(label)):
-        rel2label[index] = label[index]
+        rel2label[index + 1] = label[index]
     # waits implement
     return rel2label
 
-def cluster_data_by_kg(task_num):
-    # waits implement
-    pass
+def read_relations_index(data_items):
+    relation_pool = []
+    for item in data_items:
+        relation_number = item[0]
+        if relation_number not in relation_pool:
+            relation_pool.append(relation_number)
+    return relation_pool
+
+def read_relation_names(file_name, relation_index):
+    all_relations = []
+    with open(file_name) as in_file:
+        for line in in_file:
+            # remove "\n" for each line
+            all_relations.append(line.split("\n")[0])
+    relation_names = [all_relations[num-1] for num in relation_index]
+    return relation_names
+
+def read_glove_embeddings(glove_input_file):
+    glove_dict = {}
+    with open(glove_input_file) as in_file:
+        for line in in_file:
+            values = line.split()
+            word = values[0]
+            glove_dict[word] = np.asarray(values[1:], dtype='float32')
+    return glove_dict
+
+def gen_relation_embedding(train_data_list, valid_data_list, test_data_list, relation_names, glove_input_file):
+    train_relation_index = read_relations_index(train_data_list)
+    #print(train_relation_index)
+    valid_relation_index = read_relations_index(valid_data_list)
+    test_relation_index = read_relations_index(test_data_list)
+    # Here list(a) will copy items in a. list.copy() not availabel in python2
+    relation_index = list(train_relation_index)
+    for index in test_relation_index+valid_relation_index:
+        if index not in relation_index:
+            relation_index.append(index)
+    relation_index = np.array(relation_index)
+    #print(relation_index[-1])
+    relation_names = [relation_names[num-1] for num in relation_index]
+    #vocabulary = gen_vocabulary(relation_names)
+    glove_vocabulary, glove_embedding = read_glove(glove_input_file)
+    #print(glove_embeddings)
+    #print(glove_embeddings['dancer'])
+    #print(vocabulary)
+    #print(relation_names[-1])
+    relation_embeddings = []
+    for relation in relation_names:
+        relation_embeddings.append(get_embedding(relation,
+                                                 glove_embedding))
+
+    relation_embeddings = np.asarray(relation_embeddings)
+    '''
+    relation_dict = {}
+    for i in range(len(relation_index)):
+        relation_dict[relation_index[i]] = i
+    '''
+    return relation_names, relation_index, relation_embeddings
+    #print(len(relation_embeddings[0]))
+    #np.save('relation_embeddings.npy', relation_embeddings)
+    #relation_embeddings = np.load('relation_embeddings.npy')
+    #print(len(relation_embeddings[0]))
+
+
+def cluster_data(num_clusters, train_data_list, valid_data_list, test_data_list, relation_names, glove_input_file):
+    relation_names, relation_index, relation_embeddings = \
+        gen_relation_embedding(train_data_list, valid_data_list, test_data_list, relation_names, glove_input_file)
+    kmeans = KMeans(n_clusters=num_clusters,
+                    random_state=0).fit(relation_embeddings)
+    #print(kmeans.inertia_)
+    labels = kmeans.labels_
+    rel_embed = {}
+    cluster_index = {}
+    for i in range(len(relation_index)):
+        cluster_index[relation_index[i]] = labels[i]
+        rel_embed[relation_index[i]] = relation_embeddings[i]
+    rel_index = np.asarray(list(relation_index))
+
+    return cluster_index, rel_embed
 
 def load_data(train_file, valid_file, test_file, relation_file, glove_file, embedding_size=300,
               task_arrange='random', rel_encode='glove', task_num=10, instance_num=100):
@@ -292,8 +367,8 @@ def load_data(train_file, valid_file, test_file, relation_file, glove_file, embe
         rel_features = rel_glove_feature(relation_file, glove_file)
         rel2cluster = cluster_data_by_glove(task_num, rel_features)
 
-    elif task_arrange == 'cluster_by_kg_embedding':
-        rel2cluster, rel_features = cluster_data_by_kg(task_num)
+    elif task_arrange == 'origin':
+        rel2cluster, rel_features = cluster_data(task_num, train_data_list, valid_data_list, test_data_list, relation_list, glove_file)
     else:
         raise Exception('task arrangement method %s not implement' % task_arrange)
 

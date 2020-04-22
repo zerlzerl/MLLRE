@@ -1,5 +1,6 @@
 import math
 import sys
+import time
 
 from tqdm import tqdm
 
@@ -130,14 +131,26 @@ def update_rel_cands(memory_data, all_seen_cands, num_cands):
                 valid_rels = [rel for rel in all_seen_cands if rel!=sample[0]]
                 sample[1] = random.sample(valid_rels, min(num_cands, len(valid_rels)))
 
+def offset_list(l, offset):
+    if offset == 0:
+        return l
+    offset_l = [None] * len(l)
+    for i in range(len(l)):
+        offset_l[(i + offset) % len(l)] = l[i]
+
+    return offset_l
+
+
 def main(opt):
 
     print(opt)
-    print('线性outer step formula，0.6 step size， 每task聚类取50个memo')
+    # print('线性outer step formula，0.6 step size， 每task聚类取50个memo')
     random.seed(opt.random_seed)
     torch.manual_seed(opt.random_seed)
     np.random.seed(opt.random_seed)
     np.random.RandomState(opt.random_seed)
+    start_time = time.time()
+    checkpoint_dir = os.path.join(opt.checkpoint_dir, '%.f' % start_time)
 
     device = torch.device(('cuda:%d' % opt.cuda_id) if torch.cuda.is_available() and opt.cuda_id >= 0 else 'cpu')
 
@@ -147,7 +160,16 @@ def main(opt):
         load_data(opt.train_file, opt.valid_file, opt.test_file, opt.relation_file, opt.glove_file,
                   opt.embedding_dim, opt.task_arrange, opt.rel_encode, opt.task_num,
                   opt.train_instance_num)
+    print('\n'.join(['Task %d\t%s' % (index, ', '.join(['%d' % rel for rel in split_train_relations[index]])) for index in range(len(split_train_relations))]))
 
+    # offset tasks
+    split_train_data = offset_list(split_train_data, opt.task_offset)
+    split_test_data = offset_list(split_test_data, opt.task_offset)
+    split_valid_data = offset_list(split_valid_data, opt.task_offset)
+    task_sq = [None] * len(split_train_relations)
+    for i in range(len(split_train_relations)):
+        task_sq[(i + opt.task_offset) % len(split_train_relations)] = i
+    print('[%s]' % ', '.join(['Task %d' % i for i in task_sq]))
     # kl similarity of the joint distribution of head and tail
     kl_dist_ht = read_json(opt.kl_dist_file)
 
@@ -247,7 +269,7 @@ def main(opt):
                     else:
                         # randomly select relation
                         instance_list = []
-                        random_relation_list = random.sample(list(rel2instance_memory.keys()), opt.sampled_rel_num)
+                        random_relation_list = random.sample(list(rel2instance_memory.keys()), min(opt.sampled_rel_num, len(rel2instance_memory)))
                         for sampled_relation in random_relation_list:
                             if opt.mini_batch_split == 'Y':
                                 instance_list.append(rel2instance_memory[sampled_relation])
@@ -273,9 +295,9 @@ def main(opt):
             # checkpoint
             checkpoint = {'net_state': inner_model.state_dict(), 'optimizer': optimizer.state_dict()}
             if valid_acc > best_valid_acc:
-                best_checkpoint = '%s/checkpoint_task%d_epoch%d.pth.tar' % (opt.checkpoint_dir, task_index + 1, epoch)
-                if not os.path.exists(opt.checkpoint_dir):
-                    os.makedirs(opt.checkpoint_dir)
+                best_checkpoint = '%s/checkpoint_task%d_epoch%d.pth.tar' % (checkpoint_dir, task_index + 1, epoch)
+                if not os.path.exists(checkpoint_dir):
+                    os.makedirs(checkpoint_dir)
                 torch.save(checkpoint, best_checkpoint)
                 best_valid_acc = valid_acc
                 early_stop = 0
@@ -287,8 +309,11 @@ def main(opt):
             t.set_postfix(loss=total_loss.item(), valid_acc=valid_acc, early_stop=early_stop, best_checkpoint=best_checkpoint)
             t.update(1)
 
-            if early_stop >= opt.early_stop:
+            if early_stop >= opt.early_stop and task_index != 0:
                 # 已经充分训练了
+                break
+
+            if task_index == 0 and early_stop >= 40:  # 防止大数据量的task在第一轮得不到充分训练
                 break
         t.close()
         print('Load best check point from %s' % best_checkpoint)
@@ -415,8 +440,8 @@ if __name__ == '__main__':
                         help='word embeddings dimensional')
     parser.add_argument('--hidden_dim', default=200, type=int,
                         help='BiLSTM hidden dimensional')
-    parser.add_argument('--task_arrange', default='cluster_by_glove_embedding',
-                        help='task arrangement method, e.g. cluster_by_glove_embedding, random')
+    parser.add_argument('--task_arrange', default='origin',
+                        help='task arrangement method, e.g. origin, cluster_by_glove_embedding, random')
     parser.add_argument('--rel_encode', default='glove',
                         help='relation encode method')
     parser.add_argument('--meta_method', default='reptile',
@@ -431,9 +456,9 @@ if __name__ == '__main__':
                         help='number of instances for one relation, -1 means all.')
     parser.add_argument('--loss_margin', default=0.5, type=float,
                         help='loss margin setting')
-    parser.add_argument('--outside_epoch', default=200, type=float,
+    parser.add_argument('--outside_epoch', default=300, type=float,
                         help='task level epoch')
-    parser.add_argument('--early_stop', default=10, type=float,
+    parser.add_argument('--early_stop', default=30, type=float,
                         help='task level epoch')
     parser.add_argument('--step_size', default=0.4, type=float,
                         help='step size Epsilon')
@@ -441,9 +466,9 @@ if __name__ == '__main__':
                         help='outer step formula, fixed, linear, square_root')
     parser.add_argument('--learning_rate', default=2e-3, type=float,
                         help='learning rate')
-    parser.add_argument('--random_seed', default=317, type=int,
+    parser.add_argument('--random_seed', default=100, type=int,
                         help='random seed')
-    parser.add_argument('--task_memory_size', default=0, type=int,
+    parser.add_argument('--task_memory_size', default=50, type=int,
                         help='number of samples for each task')
     parser.add_argument('--memory_select_method', default='select_for_relation',
                         help='the method of sample memory data, e.g. vec_cluster, random, difficulty, select_for_relation, select_for_task')
@@ -453,7 +478,7 @@ if __name__ == '__main__':
                         help='whether mini-batch split into sampled_rel_num batches, Y or N')
     parser.add_argument('--checkpoint_dir', default='./checkpoint',
                         help='check point dir')
-    parser.add_argument('--sampled_rel_num', default=5,
+    parser.add_argument('--sampled_rel_num', default=10,
                         help='relation sampled number for current training relation')
     parser.add_argument('--sampled_instance_num', default=6,
                         help='instance sampled number for a sampled relation, total sampled 6 * 80 instances ')
@@ -461,62 +486,61 @@ if __name__ == '__main__':
                         help='instance sampled number for a task, total sampled 50 instances ')
     parser.add_argument('--kl_dist_file', default='dataset/kl_dist_ht.json',
                         help='glove embedding file')
-    parser.add_argument('--index', default=2, type=int,
+    parser.add_argument('--index', default=1, type=int,
                         help='experiment index')
+    parser.add_argument('--task_offset', default=5, type=int,
+                        help='task sequence index offset')
 
     opt = parser.parse_args()
+    if opt.index == 1:
+        # MLLRE
+        opt.memory_select_method = 'vec_cluster'
+        opt.task_memory_size = 50
 
     if opt.index == 2:
-        opt.cuda_id = 0
         opt.memory_select_method = 'select_for_task'
         opt.is_curriculum_train = 'N'
         opt.mini_batch_split = 'N'
         opt.checkpoint_dir = './checkpoint/2'
-
+    #
     if opt.index == 3:
-        opt.cuda_id = 0
         opt.memory_select_method = 'select_for_task'
         opt.is_curriculum_train = 'N'
         opt.mini_batch_split = 'Y'
         opt.checkpoint_dir = './checkpoint/3'
-
+    #
     if opt.index == 4:
-        opt.cuda_id = 0
         opt.memory_select_method = 'select_for_task'
         opt.is_curriculum_train = 'Y'
         opt.mini_batch_split = 'N'
         opt.checkpoint_dir = './checkpoint/4'
-
+    #
     if opt.index == 5:
-        opt.cuda_id = 0
         opt.memory_select_method = 'select_for_task'
         opt.is_curriculum_train = 'Y'
         opt.mini_batch_split = 'Y'
         opt.checkpoint_dir = './checkpoint/5'
-
+    #
     if opt.index == 6:
         opt.cuda_id = 1
         opt.memory_select_method = 'select_for_relation'
         opt.is_curriculum_train = 'N'
         opt.mini_batch_split = 'N'
         opt.checkpoint_dir = './checkpoint/6'
-
+    #
     if opt.index == 7:
-        opt.cuda_id = 1
         opt.memory_select_method = 'select_for_relation'
         opt.is_curriculum_train = 'N'
         opt.mini_batch_split = 'Y'
         opt.checkpoint_dir = './checkpoint/7'
-
+    #
     if opt.index == 8:
-        opt.cuda_id = 1
         opt.memory_select_method = 'select_for_relation'
         opt.is_curriculum_train = 'Y'
         opt.mini_batch_split = 'N'
         opt.checkpoint_dir = './checkpoint/8'
-
+    #
     if opt.index == 9:
-        opt.cuda_id = 1
         opt.memory_select_method = 'select_for_relation'
         opt.is_curriculum_train = 'Y'
         opt.mini_batch_split = 'Y'
