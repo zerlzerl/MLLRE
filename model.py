@@ -48,6 +48,7 @@ class BiLSTM(nn.Module):
         #self.hidden[1] = self.hidden[1].to(device)
 
     def forward(self, packed_embeds):
+        # 句子和关系的编码方法
         #print(packed_embeds)
         #print(self.hidden)
         lstm_out, self.hidden = self.lstm(packed_embeds, self.hidden)
@@ -118,6 +119,7 @@ class SimilarityModel(nn.Module):
     def forward(self, question_list, relation_list, device,
                 reverse_question_indexs, reverse_relation_indexs,
                 question_lengths, relation_lengths, reverse_model=None):
+        # shape of question_list: (36, 128) 36 is the maximum length of questions, 128 is the batch size
         question_embeds = self.word_embeddings(question_list)
         relation_embeds = self.word_embeddings(relation_list)
         #print(question_lengths)
@@ -127,7 +129,7 @@ class SimilarityModel(nn.Module):
         relation_packed = \
             torch.nn.utils.rnn.pack_padded_sequence(relation_embeds,
                                                     relation_lengths)
-        question_embedding = self.sentence_biLstm(question_packed)
+        question_embedding = self.sentence_biLstm(question_packed)  # shape
         relation_embedding = self.relation_biLstm(relation_packed)
         question_embedding = question_embedding[reverse_question_indexs]
         relation_embedding = relation_embedding[reverse_relation_indexs]

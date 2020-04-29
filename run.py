@@ -140,6 +140,12 @@ def offset_list(l, offset):
 
     return offset_l
 
+def resort_list(l, index):
+    resorted_l = [None] * len(l)
+    for i in range(len(index)):
+        resorted_l[i] = l[index[i]]
+
+    return resorted_l
 
 def main(opt):
 
@@ -163,14 +169,43 @@ def main(opt):
     print('\n'.join(['Task %d\t%s' % (index, ', '.join(['%d' % rel for rel in split_train_relations[index]])) for index in range(len(split_train_relations))]))
 
     # offset tasks
-    split_train_data = offset_list(split_train_data, opt.task_offset)
-    split_test_data = offset_list(split_test_data, opt.task_offset)
-    split_valid_data = offset_list(split_valid_data, opt.task_offset)
-    task_sq = [None] * len(split_train_relations)
-    for i in range(len(split_train_relations)):
-        task_sq[(i + opt.task_offset) % len(split_train_relations)] = i
-    print('[%s]' % ', '.join(['Task %d' % i for i in task_sq]))
-    # kl similarity of the joint distribution of head and tail
+    # split_train_data = offset_list(split_train_data, opt.task_offset)
+    # split_test_data = offset_list(split_test_data, opt.task_offset)
+    # split_valid_data = offset_list(split_valid_data, opt.task_offset)
+    # task_sq = [None] * len(split_train_relations)
+    # for i in range(len(split_train_relations)):
+    #     task_sq[(i + opt.task_offset) % len(split_train_relations)] = i
+    # print('[%s]' % ', '.join(['Task %d' % i for i in task_sq]))
+
+    # insert 6th-task
+    # task_index = [[6, 0, 1, 2, 3, 4, 5, 7, 8, 9],
+    #               [0, 6, 1, 2, 3, 4, 5, 7, 8, 9],
+    #               [0, 1, 6, 2, 3, 4, 5, 7, 8, 9],
+    #               [0, 1, 2, 6, 3, 4, 5, 7, 8, 9],
+    #               [0, 1, 2, 3, 6, 4, 5, 7, 8, 9],
+    #               [0, 1, 2, 3, 4, 6, 5, 7, 8, 9],
+    #               [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    #               [0, 1, 2, 3, 4, 5, 7, 6, 8, 9],
+    #               [0, 1, 2, 3, 4, 5, 7, 8, 6, 9],
+    #               [0, 1, 2, 3, 4, 5, 7, 8, 9, 6]]
+
+    task_index = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+                  [9, 0, 1, 2, 3, 4, 5, 6, 7, 8],
+                  [8, 9, 0, 1, 2, 3, 4, 5, 6, 7],
+                  [7, 8, 9, 0, 1, 2, 3, 4, 5, 6],
+                  [6, 7, 8, 9, 0, 1, 2, 3, 4, 5],
+                  [5, 6, 7, 8, 9, 0, 1, 2, 3, 4],
+                  [4, 5, 6, 7, 8, 9, 0, 1, 2, 3],
+                  [3, 4, 5, 6, 7, 8, 9, 0, 1, 2],
+                  [2, 3, 4, 5, 6, 7, 8, 9, 0, 1],
+                  [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]]
+
+
+    split_train_data = resort_list(split_train_data, task_index[opt.sequence_index])
+    split_test_data = resort_list(split_test_data, task_index[opt.sequence_index])
+    split_valid_data = resort_list(split_valid_data, task_index[opt.sequence_index])
+    split_train_relations = resort_list(split_valid_data, task_index[opt.sequence_index])
+    print('[%s]' % ', '.join(['Task %d' % idx for idx in task_index[opt.sequence_index]]))
     kl_dist_ht = read_json(opt.kl_dist_file)
 
     # tmp = [[0, 1, 2, 3], [1, 0, 4, 6], [2, 4, 0, 5], [3, 6, 5, 0]]
@@ -424,13 +459,13 @@ def main(opt):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cuda_id', default=0, type=int,
+    parser.add_argument('--cuda_id', default=1, type=int,
                         help='cuda device index, -1 means use cpu')
-    parser.add_argument('--train_file', default='dataset/training_data.txt',
+    parser.add_argument('--train_file', default='dataset/training_data_with_entity.txt',
                         help='train file')
-    parser.add_argument('--valid_file', default='dataset/val_data.txt',
+    parser.add_argument('--valid_file', default='dataset/val_data_with_entity.txt',
                         help='valid file')
-    parser.add_argument('--test_file', default='dataset/val_data.txt',
+    parser.add_argument('--test_file', default='dataset/val_data_with_entity.txt',
                         help='test file')
     parser.add_argument('--relation_file', default='dataset/relation_name.txt',
                         help='relation name file')
@@ -440,7 +475,7 @@ if __name__ == '__main__':
                         help='word embeddings dimensional')
     parser.add_argument('--hidden_dim', default=200, type=int,
                         help='BiLSTM hidden dimensional')
-    parser.add_argument('--task_arrange', default='origin',
+    parser.add_argument('--task_arrange', default='random',
                         help='task arrangement method, e.g. origin, cluster_by_glove_embedding, random')
     parser.add_argument('--rel_encode', default='glove',
                         help='relation encode method')
@@ -452,7 +487,7 @@ if __name__ == '__main__':
                         help='Reptile inner loop batch size')
     parser.add_argument('--task_num', default=10, type=int,
                         help='number of tasks')
-    parser.add_argument('--train_instance_num', default=200, type=int,
+    parser.add_argument('--train_instance_num', default=-1, type=int,
                         help='number of instances for one relation, -1 means all.')
     parser.add_argument('--loss_margin', default=0.5, type=float,
                         help='loss margin setting')
@@ -462,7 +497,7 @@ if __name__ == '__main__':
                         help='task level epoch')
     parser.add_argument('--step_size', default=0.4, type=float,
                         help='step size Epsilon')
-    parser.add_argument('--outer_step_formula', default='square_root', type=str,
+    parser.add_argument('--outer_step_formula', default='fixed', type=str,
                         help='outer step formula, fixed, linear, square_root')
     parser.add_argument('--learning_rate', default=2e-3, type=float,
                         help='learning rate')
@@ -488,8 +523,8 @@ if __name__ == '__main__':
                         help='glove embedding file')
     parser.add_argument('--index', default=1, type=int,
                         help='experiment index')
-    parser.add_argument('--task_offset', default=5, type=int,
-                        help='task sequence index offset')
+    parser.add_argument('--sequence_index', default=1, type=int,
+                        help='sequence index of tasks')
 
     opt = parser.parse_args()
     if opt.index == 1:

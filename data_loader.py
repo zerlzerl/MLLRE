@@ -6,6 +6,9 @@ import numpy as np
 import wordninja
 import re
 
+def lower_case(token_list):
+    return [str.lower(token) for token in token_list]
+
 def remove_return_sym(string):
     return string.rstrip('\n')
 
@@ -31,15 +34,21 @@ def read_data(file_path):
             data_dict = {}
             data_list = []
             for line in f:
-                items = line.split('\t')
+                items = remove_return_sym(line).split('\t')
                 rel_idx = int(items[0])
                 candidate_rel_idx = [int(idx) for idx in items[1].split()]
                 tokens = remove_invalid_token(remove_return_sym(items[2]).split())
-                data_list.append([rel_idx, candidate_rel_idx, tokens])
+                h = items[3]  # entity string not need to separate cause we will not directly use it
+                h_pos = [int(idx) for idx in items[4].split()]
+                t = items[5]
+                t_pos = [int(idx) for idx in items[6].split()]
+
+                data_item = [rel_idx, candidate_rel_idx, tokens, h, h_pos, t, t_pos]
+                data_list.append(data_item)
                 if rel_idx not in data_dict:
-                    data_dict[rel_idx] = [[rel_idx, candidate_rel_idx, tokens]]
+                    data_dict[rel_idx] = [data_item]
                 else:
-                    data_dict[rel_idx].append([rel_idx, candidate_rel_idx, tokens])
+                    data_dict[rel_idx].append(data_item)
 
             dump_pickle(tmp_file_path, (data_list, data_dict))
             return data_list, data_dict
@@ -136,7 +145,7 @@ def build_vocabulary_embedding(relation_list, all_samples, glove_embedding,
                 if word in glove_embedding:
                     embedding.append(glove_embedding[word])
                 else:
-                    embedding.append(np.random.rand(embedding_size))
+                    embedding.append(np.random.rand(embedding_size))  # 对于非glove的词随机一个embedding
     for sample in all_samples:
         question = sample[2]
         for word in question:
@@ -345,6 +354,21 @@ def cluster_data(num_clusters, train_data_list, valid_data_list, test_data_list,
 
     return cluster_index, rel_embed
 
+def random_split_data(num_clusters, train_data_list, valid_data_list, test_data_list, relation_names, glove_input_file):
+    relation_names, relation_index, relation_embeddings = \
+        gen_relation_embedding(train_data_list, valid_data_list, test_data_list, relation_names, glove_input_file)
+    labels = [None] * len(relation_index)
+    random.shuffle(relation_index)
+    for i in range(len(relation_index)):
+        labels[relation_index[i] - 1] = i % num_clusters
+    rel_embed = {}
+    cluster_index = {}
+    for i in range(len(relation_index)):
+        cluster_index[relation_index[i]] = labels[i]
+        rel_embed[relation_index[i]] = relation_embeddings[i]
+    rel_index = np.asarray(list(relation_index))
+    return cluster_index, rel_embed
+
 def load_data(train_file, valid_file, test_file, relation_file, glove_file, embedding_size=300,
               task_arrange='random', rel_encode='glove', task_num=10, instance_num=100):
     # generate data
@@ -355,13 +379,14 @@ def load_data(train_file, valid_file, test_file, relation_file, glove_file, embe
 
     # arrange task
     if task_arrange == 'random':
-        rel2cluster = random_split_relation(task_num, relation_dict)
-        if rel_encode == 'glove':
-            rel_features = rel_glove_feature(relation_file, glove_file)
-        elif rel_encode == 'kg':
-            rel_features = rel_kg_feature()
-        else:
-            raise Exception('rel_encode method %s not implement.' % rel_encode)
+        # rel2cluster = random_split_relation(task_num, relation_dict)
+        rel2cluster, rel_features = random_split_data(task_num, train_data_list, valid_data_list, test_data_list, relation_list, glove_file)
+        # if rel_encode == 'glove':
+        #     rel_features = rel_glove_feature(relation_file, glove_file)
+        # elif rel_encode == 'kg':
+        #     rel_features = rel_kg_feature()
+        # else:
+        #     raise Exception('rel_encode method %s not implement.' % rel_encode)
 
     elif task_arrange == 'cluster_by_glove_embedding':
         rel_features = rel_glove_feature(relation_file, glove_file)
