@@ -147,3 +147,60 @@ class SimilarityModel(nn.Module):
         else:
             cos = nn.CosineSimilarity(dim=1)
             return cos(question_embedding, relation_embedding)
+
+class PCNN_Encoder(nn.Module):
+    def __init__(self):
+        super(PCNN_Encoder, self).__init__()
+
+class PCNNModel(nn.Module):
+    def __init__(self, embedding_dim, hidden_dim, vocab_size, vocab_embedding,
+                 batch_size, device, pos_limit=60, pos_dim=10):
+        super(PCNNModel, self).__init__()
+        # hyperparams
+
+        # set glove embeddings
+        self.word_embeddings = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+        self.word_embeddings.weight.data.copy_(torch.from_numpy(vocab_embedding))
+        self.word_embeddings = self.word_embeddings.to(device)
+        self.word_embeddings.weight.requires_grad = False
+
+        # set pos embeddings
+        # pos_size = 2 * pos_limit + 2, 0留给padding
+        self.headPosEmbed = nn.Embedding(2 * pos_limit + 2, pos_dim, padding_idx=0)  # pos_size = max_length
+        self.tailPosEmbed = nn.Embedding(2 * pos_limit + 2, pos_dim, padding_idx=0)
+
+        self.conv = nn.Conv1d(embedding_dim + pos_dim * 2, 100, 3)
+        self.pool = nn.MaxPool1d(120)
+        # set mask embeddings
+        self.mask_embedding = nn.Embedding(4, 3)
+        self.mask_embedding.weight.data.copy_(torch.FloatTensor([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]))
+        self.mask_embedding.weight.requires_grad = False
+        self._minus = -100
+
+        # relation encoder use BiLSTM
+        self.relation_biLstm = BiLSTM(embedding_dim, hidden_dim, vocab_size,
+                                      vocab_embedding, batch_size, device)
+
+    def init_hidden(self, device, batch_size=1):
+        pass
+
+    def init_embedding(self, vocab_embedding):
+        pass
+
+    def ranking_sequence(self, sequence):
+        pass
+
+    def compute_que_embed(self, question_list, question_lengths,
+                          reverse_question_indexs, reverse_model,
+                          before_reverse=False):
+        pass
+
+    def compute_rel_embed(self, relation_list, relation_lengths,
+                          reverse_relation_indexs, reverse_model,
+                          before_reverse=False):
+        pass
+
+    def forward(self, question_list, relation_list, device,
+                reverse_question_indexs, reverse_relation_indexs,
+                question_lengths, relation_lengths, reverse_model=None):
+        pass

@@ -136,6 +136,12 @@ def build_vocabulary_embedding(relation_list, all_samples, glove_embedding,
     embedding = []
     index = 0
     np.random.seed(100)
+    # 0作为[pad]
+    vocabulary['[pad]'] = index
+    embedding.append(np.random.rand(embedding_size))
+    index += 1
+
+    # 对relation中的文字编码
     for relation in relation_list:
         for word in relation:
             if word not in vocabulary:
@@ -146,6 +152,8 @@ def build_vocabulary_embedding(relation_list, all_samples, glove_embedding,
                     embedding.append(glove_embedding[word])
                 else:
                     embedding.append(np.random.rand(embedding_size))  # 对于非glove的词随机一个embedding
+
+    # 对句子中的文字编码
     for sample in all_samples:
         question = sample[2]
         for word in question:
@@ -158,6 +166,26 @@ def build_vocabulary_embedding(relation_list, all_samples, glove_embedding,
                 else:
                     #print(word)
                     embedding.append(np.random.rand(embedding_size))
+
+        head = sample[3]
+        if head not in vocabulary:
+            vocabulary[head] = index
+            index += 1
+            if head in glove_embedding:
+                embedding.append(glove_embedding[head])
+            else:
+                #print(word)
+                embedding.append(np.random.rand(embedding_size))
+
+        tail = sample[5]
+        if tail not in vocabulary:
+            vocabulary[tail] = index
+            index += 1
+            if tail in glove_embedding:
+                embedding.append(glove_embedding[tail])
+            else:
+                #print(word)
+                embedding.append(np.random.rand(embedding_size))
 
     return vocabulary, embedding
 
@@ -177,6 +205,9 @@ def transform_relations(relation_list, vocabulary):
 def transform_questions(sample_list, vocabulary):
     for sample in sample_list:
         sample[2] = words2indexs(sample[2], vocabulary)
+        sample[3] = vocabulary[sample[3]]
+        sample[5] = vocabulary[sample[5]]
+
     return sample_list
 
 def generate_data(train_file, valid_file, test_file, relation_file, glove_file, embedding_size=300):
@@ -248,7 +279,7 @@ def get_embedding(relation_name, glove_embeddings):
         if word.lower() in glove_embeddings:
             relation_embeddings.append(glove_embeddings[word.lower()])
         else:
-            print(word,"is not contained in glove vocabulary")
+            print(word, "is not contained in glove vocabulary")
     return np.mean(relation_embeddings, 0)
 
 def rel_glove_feature(relation_file, glove_file):

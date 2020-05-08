@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import argparse
 import numpy as np
 import random
-from model import SimilarityModel
+from model import PCNNModel
 from copy import deepcopy
 import torch.optim as optim
 
@@ -36,10 +36,14 @@ def feed_samples(model, samples, loss_function, all_relations, device,
         ranking_sequence(relations)
     question_lengths = [len(question) for question in ranked_questions]  # 排序之后每个question list中句子的长度
     relation_lengths = [len(relation) for relation in ranked_relations]  # 排序之后每个relation list中句子的长度
-    pad_questions = torch.nn.utils.rnn.pad_sequence(ranked_questions)  # 进行补齐
+
+    # pad_questions = torch.nn.utils.rnn.pad_sequence(ranked_questions)  # 进行补齐
     pad_relations = torch.nn.utils.rnn.pad_sequence(ranked_relations)
-    pad_questions = pad_questions.to(device)
+
+    # pad_questions = pad_questions.to(device)
     pad_relations = pad_relations.to(device)
+
+
 
     model.zero_grad()
     if alignment_model is not None:
@@ -147,6 +151,142 @@ def resort_list(l, index):
 
     return resorted_l
 
+def _handle_pos_limit(pos, limit):
+    # 句长限制: 指句子中词语相对entity的position限制
+    # 如：[-30, 30]，embed 时整体+31，变成[1, 61]
+    # 则一共62个pos token，0 留给 pad
+    for i, p in enumerate(pos):
+        if p > limit:
+            pos[i] = limit
+        if p < -limit:
+            pos[i] = -limit
+    return [p + limit + 1 for p in pos]
+
+
+def process_data_item(data_item, pos_limit=60, max_length=120):
+    rel_id = data_item[0]
+    rel_cands = data_item[1]
+    token_list = data_item[2]
+    h_pos = data_item[4]
+    t_pos = data_item[6]
+
+    h_pos_s = h_pos[0]
+    h_pos_e = h_pos[-1]
+
+    t_pos_s = t_pos[0]
+    t_pos_e = t_pos[-1]
+
+    if len(set(h_pos).intersection(set(t_pos))) != 0:
+        # h 和 t 的元素有交集
+        print(str(data_item))
+        print('Speak Very Loudly')
+        # 所幸没有这种情况不然要疯
+        return None
+    else:
+        # h 和 t 的元素是无交集的
+        if h_pos_s < t_pos_s:
+            # head在前
+            # [before_head_ids, head_id, between_ids, tail_id, after_tail_ids]
+            # 首先把head和tail换成一个id
+            before_head_ids = token_list[:h_pos_s]
+            head_id = [data_item[3]]
+            between_ids = token_list[h_pos_e + 1: t_pos_s]
+            tail_id = [data_item[5]]
+            after_tail_ids = token_list[t_pos_e + 1:]
+
+            # refactory_token_list = []
+            # if len(before_head_ids) == 0:
+            #     print('1')
+            # if len(between_ids) == 0:
+            #     print('2')
+            # if len(after_tail_ids) == 0:
+            #     print('3')
+            # before_head_ids, between_ids, after_tail_ids这三段都有可能没有
+            refactory_token_list = before_head_ids + head_id + between_ids + tail_id + after_tail_ids
+            seq_len = len(refactory_token_list)
+            h_pos_new = len(before_head_ids)
+            t_pos_new = len(before_head_ids) + len(between_ids) + 1
+
+            pcnn_mask = [1] * len(before_head_ids) + [2] * (1 + len(between_ids)) + [3] * (1 + len(after_tail_ids))
+            # relative position
+            pos_h = [(index - h_pos_new) for index in range(len(refactory_token_list))]
+            pos_t = [(index - t_pos_new) for index in range(len(refactory_token_list))]
+            pos_h = _handle_pos_limit(pos_h, pos_limit)
+            pos_t = _handle_pos_limit(pos_t, pos_limit)
+
+            processed_data_item = [rel_id, rel_cands, refactory_token_list, pos_h, pos_t, pcnn_mask]
+
+            return processed_data_item
+        else:
+            # tail在前
+            # [before_tail_ids, tail_id, between_ids, head_id, after_head_ids]
+            before_tail_ids = token_list[:t_pos_s]
+            tail_id = [data_item[5]]
+            between_ids = token_list[t_pos_e + 1: h_pos_s]
+            head_id = [data_item[3]]
+            after_head_ids = token_list[h_pos_e + 1:]
+
+            # if len(before_tail_ids) == 0:
+            #     print('A')
+            # if len(between_ids) == 0:
+            #     print('B')
+            # if len(after_head_ids) == 0:
+            #     print('C')
+            # before_tail_ids, between_ids, after_head_ids这三段都有可能没有
+            refactory_token_list = before_tail_ids + tail_id + between_ids + head_id + after_head_ids
+            h_pos_new = len(before_tail_ids) + len(between_ids) + 1
+            t_pos_new = len(before_tail_ids)
+
+            pcnn_mask = [1] * len(before_tail_ids) + [2] * (1 + len(between_ids)) + [3] * (1 + len(after_head_ids))
+
+            # relative position
+            pos_h = [(index - h_pos_new) for index in range(len(refactory_token_list))]
+            pos_t = [(index - t_pos_new) for index in range(len(refactory_token_list))]
+
+            pos_h = _handle_pos_limit(pos_h, pos_limit)
+            pos_t = _handle_pos_limit(pos_t, pos_limit)
+
+            processed_data_item = [rel_id, rel_cands, refactory_token_list, pos_h, pos_t, pcnn_mask]
+
+            return processed_data_item
+
+def pad_seq(data_item, max_length):
+    # data_item = [rel_id, rel_cands, refactory_token_list, pos_h, pos_t, pcnn_mask]
+    if len(data_item[2]) == max_length:
+        data_item.append(max_length)  # save sequence length
+    elif len(data_item[2]) < max_length:
+        # pad 0
+        seq_length = len(data_item[2])
+        data_item[2] += [0] * (max_length - seq_length)
+        data_item[3] += [0] * (max_length - seq_length)
+        data_item[4] += [0] * (max_length - seq_length)
+        data_item[5] += [0] * (max_length - seq_length)
+        data_item.append(seq_length)
+    else:
+        # remove exceed tokens
+        data_item[2] = data_item[2][: max_length]
+        data_item[3] = data_item[3][: max_length]
+        data_item[4] = data_item[4][: max_length]
+        data_item[5] = data_item[5][: max_length]
+        data_item.append(max_length)
+
+    return data_item
+
+def preprocess(split_data, max_length=120):
+    # this method is used to preprocess tokens, head_pos, tail_pos and pcnn_mask
+    processed_split_data = []
+    for split_task_data in split_data:
+        processed_split_task_data = []
+        for data_item in split_task_data:
+            processed_data_item = process_data_item(data_item)
+            if processed_data_item is not None:
+                processed_split_task_data.append(processed_data_item)
+                # processed_split_task_data.append(pad_seq(processed_data_item, max_length))
+        processed_split_data.append(processed_split_task_data)
+
+    return processed_split_data
+
+
 def main(opt):
 
     print(opt)
@@ -204,17 +344,20 @@ def main(opt):
     split_train_data = resort_list(split_train_data, task_index[opt.sequence_index])
     split_test_data = resort_list(split_test_data, task_index[opt.sequence_index])
     split_valid_data = resort_list(split_valid_data, task_index[opt.sequence_index])
-    split_train_relations = resort_list(split_valid_data, task_index[opt.sequence_index])
+    split_train_relations = resort_list(split_train_data, task_index[opt.sequence_index])
     print('[%s]' % ', '.join(['Task %d' % idx for idx in task_index[opt.sequence_index]]))
     kl_dist_ht = read_json(opt.kl_dist_file)
 
     # tmp = [[0, 1, 2, 3], [1, 0, 4, 6], [2, 4, 0, 5], [3, 6, 5, 0]]
     sorted_sililarity_index = np.argsort(np.asarray(kl_dist_ht), axis=1) + 1
 
-
+    # data preprocess for pcnn
+    split_train_data = preprocess(split_train_data)
+    split_test_data = preprocess(split_test_data)
+    split_valid_data = preprocess(split_valid_data)
+    print()
     # prepare model
-    inner_model = SimilarityModel(opt.embedding_dim, opt.hidden_dim, len(vocabulary),
-                                  np.array(embedding), 1, device)
+    inner_model = PCNNModel(opt.embedding_dim, opt.hidden_dim, len(vocabulary), np.array(embedding), 1, device)
 
     memory_data = []
     memory_question_embed = []

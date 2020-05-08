@@ -1,3 +1,4 @@
+# 原版 MLLRE
 import math
 import sys
 import time
@@ -28,6 +29,7 @@ def feed_samples(model, samples, loss_function, all_relations, device,
     :param alignment_model:
     :return:
     """
+
     questions, relations, relation_set_lengths = process_samples(
         samples, all_relations, device)  # 将每个sample都进行展开，做成question和一个候选关系一对一的形式，relation_set_lengths记录了每个sample展开成了几个句子
     ranked_questions, alignment_question_indexs = \
@@ -149,12 +151,12 @@ def resort_list(l, index):
 
 def resort_memory(memory_pool, similarity_index):
     memory_pool = sorted(memory_pool, key=lambda item: np.argwhere(similarity_index == item[0]))
-    return memory_pool
+    # return memory_pool
     # 隔k个取一个
-    # _memo_pool = []
-    # for i in range(0, len(memory_pool), 2):
-    #     _memo_pool.append(memory_pool[i])
-    # return _memo_pool
+    _memo_pool = []
+    for i in range(0, len(memory_pool), 2):
+        _memo_pool.append(memory_pool[i])
+    return _memo_pool
 
 def main(opt):
 
@@ -282,19 +284,19 @@ def main(opt):
 
                 if len(memory_data) > 0:
                     # curriculum select and organize memory
-                    # if target_rel == -1 or len(resorted_memory_pool) == 0:
-                    #     target_rel = batch_train_data[0][0]
-                    #     target_rel_sorted_index = sorted_similarity_index[target_rel - 1]
-                    #     resorted_memory_pool = resort_memory(memory_pool, target_rel_sorted_index)
-                    #
-                    # if len(resorted_memory_pool) >= opt.task_memory_size:
-                    #     current_memory = resorted_memory_pool[:opt.task_memory_size]
-                    #     resorted_memory_pool = resorted_memory_pool[opt.task_memory_size + 1:]  # 更新剩余的memory
-                    #     batch_train_data.extend(current_memory)
-                    # else:
-                    #     current_memory = resorted_memory_pool[:]
-                    #     resorted_memory_pool = []  # 更新剩余的memory
-                    #     batch_train_data.extend(current_memory)
+                    if target_rel == -1 or len(resorted_memory_pool) == 0:
+                        target_rel = batch_train_data[0][0]
+                        target_rel_sorted_index = sorted_similarity_index[target_rel - 1]
+                        resorted_memory_pool = resort_memory(memory_pool, target_rel_sorted_index)
+
+                    if len(resorted_memory_pool) >= opt.task_memory_size:
+                        current_memory = resorted_memory_pool[:opt.task_memory_size]
+                        resorted_memory_pool = resorted_memory_pool[opt.task_memory_size + 1:]  # 更新剩余的memory
+                        batch_train_data.extend(current_memory)
+                    else:
+                        current_memory = resorted_memory_pool[:]
+                        resorted_memory_pool = []  # 更新剩余的memory
+                        batch_train_data.extend(current_memory)
 
                     # 淘汰的做法
                     # if len(resorted_memory_pool) != 0:
@@ -308,15 +310,15 @@ def main(opt):
 
 
                     # MLLRE的做法
-                    all_seen_data = []
-                    for one_batch_memory in memory_data:
-                        all_seen_data += one_batch_memory
-
-                    memory_batch = memory_data[memory_index]
-                    batch_train_data.extend(memory_batch)
-                    # scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
-                    # optimizer.step()
-                    memory_index = (memory_index+1) % len(memory_data)
+                    # all_seen_data = []
+                    # for one_batch_memory in memory_data:
+                    #     all_seen_data += one_batch_memory
+                    #
+                    # memory_batch = memory_data[memory_index]
+                    # batch_train_data.extend(memory_batch)
+                    # # scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
+                    # # optimizer.step()
+                    # memory_index = (memory_index+1) % len(memory_data)
 
 
                 # random.shuffle(batch_train_data)
@@ -520,7 +522,7 @@ if __name__ == '__main__':
                         help='word embeddings dimensional')
     parser.add_argument('--hidden_dim', default=200, type=int,
                         help='BiLSTM hidden dimensional')
-    parser.add_argument('--task_arrange', default='random',
+    parser.add_argument('--task_arrange', default='origin',
                         help='task arrangement method, e.g. origin, cluster_by_glove_embedding, random')
     parser.add_argument('--rel_encode', default='glove',
                         help='relation encode method')
@@ -538,7 +540,7 @@ if __name__ == '__main__':
                         help='loss margin setting')
     parser.add_argument('--outside_epoch', default=300, type=float,
                         help='task level epoch')
-    parser.add_argument('--early_stop', default=20, type=float,
+    parser.add_argument('--early_stop', default=30, type=float,
                         help='task level epoch')
     parser.add_argument('--step_size', default=0.4, type=float,
                         help='step size Epsilon')
