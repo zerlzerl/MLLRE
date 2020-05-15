@@ -1,4 +1,5 @@
 import math
+import pickle
 import sys
 import time
 
@@ -15,6 +16,8 @@ import random
 from model import SimilarityModel
 from copy import deepcopy
 import torch.optim as optim
+from sklearn.manifold import TSNE
+import matplotlib.pyplot as plt
 
 def feed_samples(model, samples, loss_function, all_relations, device,
                  alignment_model=None):
@@ -156,6 +159,64 @@ def resort_memory(memory_pool, similarity_index):
     #     _memo_pool.append(memory_pool[i])
     # return _memo_pool
 
+
+# get relation embedding of current seen relations
+def tsne_relations(model, seen_task_relations, all_relations, device, task_idx, alignment_model=None, before_alignment=False):
+    color_schema = ['black', 'darkviolet', 'firebrick', 'green', 'gold',
+                      'chartreuse', 'darkorange', 'chocolate', 'cyan', 'grey']
+    task_labels = ['Task %d' % idx for idx in task_idx]
+    # get relation embeddings of current seen relations
+    current_seen_relations = []
+    relation_cluster = []
+    for i in range(len(seen_task_relations)):
+        current_seen_relations.extend(seen_task_relations[i])
+        relation_cluster.extend([i] * len(seen_task_relations[i]))
+
+    relations_index = []
+    for rel in current_seen_relations:
+        relations_index.append(torch.tensor(all_relations[rel - 1], dtype=torch.long).to(device))
+
+    model.init_hidden(device, len(relations_index))
+    ranked_relations, alignment_relation_indexs = ranking_sequence(relations_index)
+    relation_lengths = [len(relation) for relation in ranked_relations]
+
+    pad_relations = torch.nn.utils.rnn.pad_sequence(ranked_relations)
+
+    rel_embeds = model.compute_rel_embed(pad_relations, relation_lengths,
+                                         alignment_relation_indexs,
+                                         alignment_model, before_alignment)
+    rel_embeds = rel_embeds.detach().cpu().numpy()
+
+    # # draw tsne picture
+    # X_tsne = TSNE(n_components=2, random_state=33).fit_transform(rel_embeds)
+    # task_label_cords_list = [None] * len(seen_task_relations)
+    # for i in range(len(current_seen_relations)):
+    #     relation_idx = current_seen_relations[i]
+    #     rel_cluster = relation_cluster[i]
+    #     relation_cord = X_tsne[i]
+    #     relation_color = color_schema[rel_cluster]
+    #     plt.scatter(relation_cord[0], relation_cord[1], alpha=0.6, marker='o', c=relation_color)
+    #     # plt.text(relation_cord[0], relation_cord[1] + 1.0, str(relation_idx), c=relation_color)
+    #
+    #     if task_label_cords_list[rel_cluster] is None:
+    #         task_label_cords_list[rel_cluster] = [relation_cord]
+    #     else:
+    #         task_label_cords_list[rel_cluster].append(relation_cord)
+    #
+    # # add task label
+    # for i in range(len(task_label_cords_list)):
+    #     task_label_cords = task_label_cords_list[i]
+    #     task_label_cord = np.mean(np.array(task_label_cords), axis=0)
+    #     plt.text(task_label_cord[0], task_label_cord[1] + 2.0, task_labels[i], c=color_schema[i])
+    #
+    # plt.title('Relation embedding distance t-SNE plot after %d tasks trained' % len(seen_task_relations),
+    #           fontsize='large', fontweight='bold', color='black')
+    # plt.show()
+
+    return rel_embeds
+
+
+
 def main(opt):
 
     print(opt)
@@ -198,7 +259,7 @@ def main(opt):
     #               [0, 1, 2, 3, 4, 5, 7, 8, 6, 9],
     #               [0, 1, 2, 3, 4, 5, 7, 8, 9, 6]]
 
-    task_index = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    task_sequence = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
                   [9, 0, 1, 2, 3, 4, 5, 6, 7, 8],
                   [8, 9, 0, 1, 2, 3, 4, 5, 6, 7],
                   [7, 8, 9, 0, 1, 2, 3, 4, 5, 6],
@@ -210,11 +271,11 @@ def main(opt):
                   [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]]
 
 
-    split_train_data = resort_list(split_train_data, task_index[opt.sequence_index])
-    split_test_data = resort_list(split_test_data, task_index[opt.sequence_index])
-    split_valid_data = resort_list(split_valid_data, task_index[opt.sequence_index])
-    split_train_relations = resort_list(split_valid_data, task_index[opt.sequence_index])
-    print('[%s]' % ', '.join(['Task %d' % idx for idx in task_index[opt.sequence_index]]))
+    split_train_data = resort_list(split_train_data, task_sequence[opt.sequence_index])
+    split_test_data = resort_list(split_test_data, task_sequence[opt.sequence_index])
+    split_valid_data = resort_list(split_valid_data, task_sequence[opt.sequence_index])
+    split_train_relations = resort_list(split_train_relations, task_sequence[opt.sequence_index])
+    print('[%s]' % ', '.join(['Task %d' % idx for idx in task_sequence[opt.sequence_index]]))
     kl_dist_ht = read_json(opt.kl_dist_file)
 
     # tmp = [[0, 1, 2, 3], [1, 0, 4, 6], [2, 4, 0, 5], [3, 6, 5, 0]]
@@ -235,14 +296,17 @@ def main(opt):
     all_seen_relations = []
     rel2instance_memory = {}
     memory_index = 0
-    for task_index in range(opt.task_num):  # outside loop
+    seen_task_relations = []
+    rel_embeddings = []
+    for task_ix in range(opt.task_num):  # outside loop
         # reptile start model parameters pi
         weights_before = deepcopy(inner_model.state_dict())
 
-        train_task = split_train_data[task_index]
-        test_task = split_test_data[task_index]
-        valid_task = split_valid_data[task_index]
-        train_relations = split_train_relations[task_index]
+        train_task = split_train_data[task_ix]
+        test_task = split_test_data[task_ix]
+        valid_task = split_valid_data[task_ix]
+        train_relations = split_train_relations[task_ix]
+        seen_task_relations.append(train_relations)
 
         # collect seen relations
         for data_item in train_task:
@@ -253,7 +317,7 @@ def main(opt):
         current_train_data = remove_unseen_relation(train_task, seen_relations)
         current_valid_data = remove_unseen_relation(valid_task, seen_relations)
         current_test_data = []
-        for previous_task_id in range(task_index + 1):
+        for previous_task_id in range(task_ix + 1):
             current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations))
 
         for this_sample in current_train_data:
@@ -373,7 +437,7 @@ def main(opt):
             # checkpoint
             checkpoint = {'net_state': inner_model.state_dict(), 'optimizer': optimizer.state_dict()}
             if valid_acc > best_valid_acc:
-                best_checkpoint = '%s/checkpoint_task%d_epoch%d.pth.tar' % (checkpoint_dir, task_index + 1, epoch)
+                best_checkpoint = '%s/checkpoint_task%d_epoch%d.pth.tar' % (checkpoint_dir, task_ix + 1, epoch)
                 if not os.path.exists(checkpoint_dir):
                     os.makedirs(checkpoint_dir)
                 torch.save(checkpoint, best_checkpoint)
@@ -383,15 +447,15 @@ def main(opt):
                 early_stop += 1
 
             # print()
-            t.set_description('Task %i Epoch %i' % (task_index+1, epoch+1))
+            t.set_description('Task %i Epoch %i' % (task_ix+1, epoch+1))
             t.set_postfix(loss=total_loss.item(), valid_acc=valid_acc, early_stop=early_stop, best_checkpoint=best_checkpoint)
             t.update(1)
 
-            if early_stop >= opt.early_stop and task_index != 0:
+            if early_stop >= opt.early_stop and task_ix != 0:
                 # 已经充分训练了
                 break
 
-            if task_index == 0 and early_stop >= 40:  # 防止大数据量的task在第一轮得不到充分训练
+            if task_ix == 0 and early_stop >= 40:  # 防止大数据量的task在第一轮得不到充分训练
                 break
         t.close()
         print('Load best check point from %s' % best_checkpoint)
@@ -407,9 +471,9 @@ def main(opt):
         if opt.outer_step_formula == 'fixed':
             outer_step_size = opt.step_size
         elif opt.outer_step_formula == 'linear':
-            outer_step_size = opt.step_size * (1 - task_index / opt.task_num)
+            outer_step_size = opt.step_size * (1 - task_ix / opt.task_num)
         elif opt.outer_step_formula == 'square_root':
-            outer_step_size = math.sqrt(opt.step_size * (1 - task_index / opt.task_num))
+            outer_step_size = math.sqrt(opt.step_size * (1 - task_ix / opt.task_num))
         # outer_step_size = 0.4
         inner_model.load_state_dict({name: weights_before[name] + (weights_after[name] - weights_before[name]) * outer_step_size
                                      for name in weights_before})
@@ -454,17 +518,17 @@ def main(opt):
             elif opt.memory_select_method == 'difficulty':
                 memory_data.append()
 
-        # 用所有memory先训练一次
-        # for i in range(2):
-
-
-
         print_list(results)
         avg_result = sum(results) / len(results)
         test_set_size = [len(testdata) for testdata in current_test_data]
         whole_result = sum([results[i] * test_set_size[i] for i in range(len(current_test_data))]) / sum(test_set_size)
         print('test_set_size: [%s]' % ', '.join([str(size) for size in test_set_size]))
         print('avg_acc: %.3f, whole_acc: %.3f' % (avg_result, whole_result))
+
+        # end of each task, get embeddings of all
+        if len(all_seen_relations) > 1:
+            rel_embed = tsne_relations(inner_model, seen_task_relations, relation_numbers, device, task_sequence[opt.sequence_index])
+            rel_embeddings.append(rel_embed)
 
 
     print('test_all:')
@@ -488,6 +552,11 @@ def main(opt):
         print('test_set_size: [%s]' % ', '.join([str(size) for size in test_set_size]))
         print('avg_acc: %.3f, whole_acc: %.3f' % (avg_result, whole_result))
 
+    with open('./results/mllre_rel_embeddings_offset8.pkl', 'wb') as f:
+        dump_tuple = (rel_embeddings, seen_task_relations, task_sequence[opt.sequence_index])
+        pickle.dump(dump_tuple, f)
+
+
 
 
 
@@ -504,7 +573,7 @@ def main(opt):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cuda_id', default=1, type=int,
+    parser.add_argument('--cuda_id', default=0, type=int,
                         help='cuda device index, -1 means use cpu')
     parser.add_argument('--train_file', default='dataset/training_data_with_entity.txt',
                         help='train file')
@@ -520,7 +589,7 @@ if __name__ == '__main__':
                         help='word embeddings dimensional')
     parser.add_argument('--hidden_dim', default=200, type=int,
                         help='BiLSTM hidden dimensional')
-    parser.add_argument('--task_arrange', default='random',
+    parser.add_argument('--task_arrange', default='origin',
                         help='task arrangement method, e.g. origin, cluster_by_glove_embedding, random')
     parser.add_argument('--rel_encode', default='glove',
                         help='relation encode method')
@@ -568,7 +637,7 @@ if __name__ == '__main__':
                         help='glove embedding file')
     parser.add_argument('--index', default=1, type=int,
                         help='experiment index')
-    parser.add_argument('--sequence_index', default=0, type=int,
+    parser.add_argument('--sequence_index', default=8, type=int,
                         help='sequence index of tasks')
 
     opt = parser.parse_args()

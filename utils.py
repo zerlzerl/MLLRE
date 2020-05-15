@@ -150,7 +150,7 @@ def process_samples(sample_list, all_relations, device):
 
 def ranking_sequence(sequence):
     word_lengths = torch.tensor([len(sentence) for sentence in sequence])
-    rankedi_word, indexs = word_lengths.sort(descending = True)
+    ranked_word, indexs = word_lengths.sort(descending = True)
     ranked_indexs, inverse_indexs = indexs.sort()
     #print(indexs)
     sequence = [sequence[i] for i in indexs]
