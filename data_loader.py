@@ -131,7 +131,7 @@ def clean_relations(relation_list, glove_vocabulary):
     return cleaned_relations
 
 def build_vocabulary_embedding(relation_list, all_samples, glove_embedding,
-                               embedding_size):
+                               embedding_size, dataset='fewrel'):
     vocabulary = {}
     embedding = []
     index = 0
@@ -166,26 +166,26 @@ def build_vocabulary_embedding(relation_list, all_samples, glove_embedding,
                 else:
                     #print(word)
                     embedding.append(np.random.rand(embedding_size))
+        if dataset == 'fewrel':
+            head = sample[3]
+            if head not in vocabulary:
+                vocabulary[head] = index
+                index += 1
+                if head in glove_embedding:
+                    embedding.append(glove_embedding[head])
+                else:
+                    #print(word)
+                    embedding.append(np.random.rand(embedding_size))
 
-        head = sample[3]
-        if head not in vocabulary:
-            vocabulary[head] = index
-            index += 1
-            if head in glove_embedding:
-                embedding.append(glove_embedding[head])
-            else:
-                #print(word)
-                embedding.append(np.random.rand(embedding_size))
-
-        tail = sample[5]
-        if tail not in vocabulary:
-            vocabulary[tail] = index
-            index += 1
-            if tail in glove_embedding:
-                embedding.append(glove_embedding[tail])
-            else:
-                #print(word)
-                embedding.append(np.random.rand(embedding_size))
+            tail = sample[5]
+            if tail not in vocabulary:
+                vocabulary[tail] = index
+                index += 1
+                if tail in glove_embedding:
+                    embedding.append(glove_embedding[tail])
+                else:
+                    #print(word)
+                    embedding.append(np.random.rand(embedding_size))
 
     return vocabulary, embedding
 
@@ -202,15 +202,16 @@ def transform_relations(relation_list, vocabulary):
     return relation_ixs
 
 # transform the words in the questions into index of the vocabulary
-def transform_questions(sample_list, vocabulary):
+def transform_questions(sample_list, vocabulary, dataset):
     for sample in sample_list:
         sample[2] = words2indexs(sample[2], vocabulary)
-        sample[3] = vocabulary[sample[3]]
-        sample[5] = vocabulary[sample[5]]
+        if dataset == 'fewrel':
+            sample[3] = vocabulary[sample[3]]
+            sample[5] = vocabulary[sample[5]]
 
     return sample_list
 
-def generate_data(train_file, valid_file, test_file, relation_file, glove_file, embedding_size=300):
+def generate_data(train_file, valid_file, test_file, relation_file, glove_file, embedding_size=300, dataset='fewrel'):
     train_data_list, train_data_dict = read_data(train_file)
     valid_data_list, valid_data_dict = read_data(valid_file)
     test_data_list, test_data_dict = read_data(test_file)
@@ -223,7 +224,8 @@ def generate_data(train_file, valid_file, test_file, relation_file, glove_file, 
     vocabulary, embedding = build_vocabulary_embedding(cleaned_relations,
                                                        all_samples,
                                                        glove_embedding,
-                                                       embedding_size)
+                                                       embedding_size,
+                                                       dataset)
 
     relation_numbers = transform_relations(cleaned_relations, vocabulary)
 
@@ -240,14 +242,15 @@ def random_split_relation(task_num, relation_dict):
 
     return rel2label
 
-def split_data(data, vocabulary, rel2cluster, task_num, instance_num=-1):  # -1 means all
+def split_data(data, vocabulary, rel2cluster, task_num, instance_num=-1, dataset='fewrel'):  # -1 means all
     separated_data = [None] * task_num
     separated_relation = [None] * task_num
     for rel, items in data.items():
         rel_culter = rel2cluster[rel]
-        items = transform_questions(items, vocabulary)
+        items = transform_questions(items, vocabulary, dataset)
         if instance_num > 0:
-            items = random.sample(items, instance_num)
+            ins_num = instance_num if len(items) > instance_num else len(items)
+            items = random.sample(items, ins_num)
             data[rel] = items
 
         if separated_data[rel_culter] is None:
@@ -388,24 +391,24 @@ def cluster_data(num_clusters, train_data_list, valid_data_list, test_data_list,
 def random_split_data(num_clusters, train_data_list, valid_data_list, test_data_list, relation_names, glove_input_file):
     relation_names, relation_index, relation_embeddings = \
         gen_relation_embedding(train_data_list, valid_data_list, test_data_list, relation_names, glove_input_file)
-    labels = [None] * len(relation_index)
+    labels = {}
     random.shuffle(relation_index)
     for i in range(len(relation_index)):
-        labels[relation_index[i] - 1] = i % num_clusters
+        labels[relation_index[i]] = i % num_clusters
     rel_embed = {}
     cluster_index = {}
     for i in range(len(relation_index)):
-        cluster_index[relation_index[i]] = labels[i]
+        cluster_index[relation_index[i]] = labels[relation_index[i]]
         rel_embed[relation_index[i]] = relation_embeddings[i]
     rel_index = np.asarray(list(relation_index))
     return cluster_index, rel_embed
 
 def load_data(train_file, valid_file, test_file, relation_file, glove_file, embedding_size=300,
-              task_arrange='random', rel_encode='glove', task_num=10, instance_num=100):
+              task_arrange='random', rel_encode='glove', task_num=10, instance_num=100, dataset='fewrel'):
     # generate data
     train_data_list, train_data_dict, test_data_list, test_data_dict, valid_data_list, valid_data_dict, \
     relation_numbers, vocabulary, embedding = \
-        generate_data(train_file, valid_file, test_file, relation_file, glove_file, embedding_size)
+        generate_data(train_file, valid_file, test_file, relation_file, glove_file, embedding_size, dataset)
     relation_list, relation_dict = read_relation(relation_file)
 
     # arrange task
@@ -428,9 +431,9 @@ def load_data(train_file, valid_file, test_file, relation_file, glove_file, embe
     else:
         raise Exception('task arrangement method %s not implement' % task_arrange)
 
-    split_train_data, split_train_relation = split_data(train_data_dict, vocabulary, rel2cluster, task_num, instance_num)
-    split_test_data, split_test_relation = split_data(test_data_dict, vocabulary, rel2cluster, task_num)
-    split_valid_data, split_valid_relation = split_data(valid_data_dict, vocabulary, rel2cluster, task_num)
+    split_train_data, split_train_relation = split_data(train_data_dict, vocabulary, rel2cluster, task_num, instance_num, dataset)
+    split_test_data, split_test_relation = split_data(test_data_dict, vocabulary, rel2cluster, task_num, dataset=dataset)
+    split_valid_data, split_valid_relation = split_data(valid_data_dict, vocabulary, rel2cluster, task_num, dataset=dataset)
 
     return split_train_data, train_data_dict, split_test_data, split_valid_data, relation_numbers, rel_features, \
            split_train_relation, vocabulary, embedding

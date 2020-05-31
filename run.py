@@ -2,7 +2,7 @@ import math
 import pickle
 import sys
 import time
-
+from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm
 
 from utils import *
@@ -235,7 +235,7 @@ def main(opt):
     split_train_relations, vocabulary, embedding = \
         load_data(opt.train_file, opt.valid_file, opt.test_file, opt.relation_file, opt.glove_file,
                   opt.embedding_dim, opt.task_arrange, opt.rel_encode, opt.task_num,
-                  opt.train_instance_num)
+                  opt.train_instance_num, opt.dataset)
     print('\n'.join(['Task %d\t%s' % (index, ', '.join(['%d' % rel for rel in split_train_relations[index]])) for index in range(len(split_train_relations))]))
 
     # offset tasks
@@ -259,28 +259,85 @@ def main(opt):
     #               [0, 1, 2, 3, 4, 5, 7, 8, 6, 9],
     #               [0, 1, 2, 3, 4, 5, 7, 8, 9, 6]]
 
-    task_sequence = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-                  [9, 0, 1, 2, 3, 4, 5, 6, 7, 8],
-                  [8, 9, 0, 1, 2, 3, 4, 5, 6, 7],
-                  [7, 8, 9, 0, 1, 2, 3, 4, 5, 6],
-                  [6, 7, 8, 9, 0, 1, 2, 3, 4, 5],
-                  [5, 6, 7, 8, 9, 0, 1, 2, 3, 4],
-                  [4, 5, 6, 7, 8, 9, 0, 1, 2, 3],
-                  [3, 4, 5, 6, 7, 8, 9, 0, 1, 2],
-                  [2, 3, 4, 5, 6, 7, 8, 9, 0, 1],
-                  [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]]
+    # task_sequence = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    #               [9, 0, 1, 2, 3, 4, 5, 6, 7, 8],
+    #               [8, 9, 0, 1, 2, 3, 4, 5, 6, 7],
+    #               [7, 8, 9, 0, 1, 2, 3, 4, 5, 6],
+    #               [6, 7, 8, 9, 0, 1, 2, 3, 4, 5],
+    #               [5, 6, 7, 8, 9, 0, 1, 2, 3, 4],
+    #               [4, 5, 6, 7, 8, 9, 0, 1, 2, 3],
+    #               [3, 4, 5, 6, 7, 8, 9, 0, 1, 2],
+    #               [2, 3, 4, 5, 6, 7, 8, 9, 0, 1],
+    #               [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]]
+    task_sequence = list(range(opt.task_num))
+    if opt.random_idx:
+        for i in range(opt.random_times):
+            random.shuffle(task_sequence)
 
+    offset_seq = task_sequence[-opt.sequence_index:] + task_sequence[:-opt.sequence_index]
+    # task_sequence = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    #                  [9, 0, 1, 2, 3, 4, 5, 6, 7, 8],
+    #                  [8, 9, 0, 1, 2, 3, 4, 5, 6, 7],
+    #                  [7, 8, 9, 0, 1, 2, 3, 4, 5, 6],
+    #                  [6, 7, 8, 9, 0, 1, 2, 3, 4, 5],
+    #                  [5, 6, 7, 8, 9, 0, 1, 2, 3, 4],
+    #                  [4, 5, 6, 7, 8, 9, 0, 1, 2, 3],
+    #                  [3, 4, 5, 6, 7, 8, 9, 0, 1, 2],
+    #                  [2, 3, 4, 5, 6, 7, 8, 9, 0, 1],
+    #                  [1, 2, 3, 4, 5, 6, 7, 8, 9, 0]]
+    #
+    # if opt.random_idx:
+    #     random_idx = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    #     for i in range(opt.random_times):
+    #         random.shuffle(random_idx)
+    #     print(str(random_idx))
+    #
+    #     for i in range(len(task_sequence)):
+    #         new_sq = [0] * len(task_sequence[i])
+    #         for j in range(len(task_sequence[i])):
+    #             new_sq[j] = random_idx[task_sequence[i][j]]
+    #         task_sequence[i] = new_sq
 
-    split_train_data = resort_list(split_train_data, task_sequence[opt.sequence_index])
-    split_test_data = resort_list(split_test_data, task_sequence[opt.sequence_index])
-    split_valid_data = resort_list(split_valid_data, task_sequence[opt.sequence_index])
-    split_train_relations = resort_list(split_train_relations, task_sequence[opt.sequence_index])
-    print('[%s]' % ', '.join(['Task %d' % idx for idx in task_sequence[opt.sequence_index]]))
-    kl_dist_ht = read_json(opt.kl_dist_file)
+    split_train_data = resort_list(split_train_data, offset_seq)
+    split_test_data = resort_list(split_test_data, offset_seq)
+    split_valid_data = resort_list(split_valid_data, offset_seq)
+    split_train_relations = resort_list(split_train_relations, offset_seq)
+    print('[%s]' % ', '.join(['Task %d' % idx for idx in offset_seq]))
 
-    # tmp = [[0, 1, 2, 3], [1, 0, 4, 6], [2, 4, 0, 5], [3, 6, 5, 0]]
-    sorted_similarity_index = np.argsort(np.asarray(kl_dist_ht), axis=1) + 1
+    relid2embedidx = {}
+    embedidx2relid = {}
+    if opt.similarity == 'kl_similarity':
+        kl_dist_ht = read_json(opt.kl_dist_file)
 
+        # tmp = [[0, 1, 2, 3], [1, 0, 4, 6], [2, 4, 0, 5], [3, 6, 5, 0]]
+        sorted_similarity_index = np.argsort(np.asarray(kl_dist_ht), axis=1) + 1
+    elif opt.similarity == 'glove_similarity':
+        glove_embedding = []
+
+        embed_id = 0
+        for rel_id in rel_features:
+            glove_embedding.append(rel_features[rel_id])
+            relid2embedidx[rel_id] = embed_id
+            embedidx2relid[embed_id] = rel_id
+            embed_id += 1
+
+        glove_similarity = cosine_similarity(np.asarray(glove_embedding))
+        glove_dist = np.sqrt(1 - np.power(np.where(glove_similarity > 1.0, 1.0, glove_similarity), 2))
+        sorted_embed_index = np.argsort(np.asarray(glove_dist), axis=1)
+        sorted_similarity_index = np.zeros(sorted_embed_index.shape)
+        for i in range(sorted_embed_index.shape[0]):
+            for j in range(sorted_embed_index.shape[1]):
+                sorted_similarity_index[i][j] = embedidx2relid[sorted_embed_index[i][j]]
+        # print()
+        # for i in range(1, len(rel_features) + 1):
+        #     rel_embed = rel_features[i]  # 1-80
+        #     glove_embedding.append(rel_embed)  # index 0-79, total 80
+        #
+        # glove_similarity = cosine_similarity(np.asarray(glove_embedding))
+        # glove_dist = np.sqrt(1 - np.power(np.where(glove_similarity > 1.0, 1.0, glove_similarity), 2))
+        # sorted_similarity_index = np.argsort(np.asarray(glove_dist), axis=1) + 1
+    else:
+        raise Exception('similarity method not implemented')
 
     # prepare model
     inner_model = SimilarityModel(opt.embedding_dim, opt.hidden_dim, len(vocabulary),
@@ -314,11 +371,11 @@ def main(opt):
                 seen_relations.append(data_item[0])
 
         # remove unseen relations
-        current_train_data = remove_unseen_relation(train_task, seen_relations)
-        current_valid_data = remove_unseen_relation(valid_task, seen_relations)
+        current_train_data = remove_unseen_relation(train_task, seen_relations, dataset=opt.dataset)
+        current_valid_data = remove_unseen_relation(valid_task, seen_relations, dataset=opt.dataset)
         current_test_data = []
         for previous_task_id in range(task_ix + 1):
-            current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations))
+            current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations, dataset=opt.dataset))
 
         for this_sample in current_train_data:
             if this_sample[0] not in all_seen_relations:
@@ -342,23 +399,27 @@ def main(opt):
             total_loss = 0.0
             target_rel = -1
             for batch in range(batch_num):
+
                 batch_train_data = current_train_data[batch * opt.batch_size: (batch + 1) * opt.batch_size]
 
                 if len(memory_data) > 0:
                     # curriculum select and organize memory
-                    # if target_rel == -1 or len(resorted_memory_pool) == 0:
-                    #     target_rel = batch_train_data[0][0]
-                    #     target_rel_sorted_index = sorted_similarity_index[target_rel - 1]
-                    #     resorted_memory_pool = resort_memory(memory_pool, target_rel_sorted_index)
-                    #
-                    # if len(resorted_memory_pool) >= opt.task_memory_size:
-                    #     current_memory = resorted_memory_pool[:opt.task_memory_size]
-                    #     resorted_memory_pool = resorted_memory_pool[opt.task_memory_size + 1:]  # 更新剩余的memory
-                    #     batch_train_data.extend(current_memory)
-                    # else:
-                    #     current_memory = resorted_memory_pool[:]
-                    #     resorted_memory_pool = []  # 更新剩余的memory
-                    #     batch_train_data.extend(current_memory)
+                    if target_rel == -1 or len(resorted_memory_pool) == 0:
+                        target_rel = batch_train_data[0][0]
+                        if opt.similarity == 'kl_similarity':
+                            target_rel_sorted_index = sorted_similarity_index[target_rel - 1]
+                        else:
+                            target_rel_sorted_index = sorted_similarity_index[relid2embedidx[target_rel]]
+                        resorted_memory_pool = resort_memory(memory_pool, target_rel_sorted_index)
+
+                    if len(resorted_memory_pool) >= opt.task_memory_size:
+                        current_memory = resorted_memory_pool[:opt.task_memory_size]
+                        resorted_memory_pool = resorted_memory_pool[opt.task_memory_size + 1:]  # 更新剩余的memory
+                        batch_train_data.extend(current_memory)
+                    else:
+                        current_memory = resorted_memory_pool[:]
+                        resorted_memory_pool = []  # 更新剩余的memory
+                        batch_train_data.extend(current_memory)
 
                     # 淘汰的做法
                     # if len(resorted_memory_pool) != 0:
@@ -372,15 +433,15 @@ def main(opt):
 
 
                     # MLLRE的做法
-                    all_seen_data = []
-                    for one_batch_memory in memory_data:
-                        all_seen_data += one_batch_memory
-
-                    memory_batch = memory_data[memory_index]
-                    batch_train_data.extend(memory_batch)
+                    # all_seen_data = []
+                    # for one_batch_memory in memory_data:
+                    #     all_seen_data += one_batch_memory
+                    #
+                    # memory_batch = memory_data[memory_index]
+                    # batch_train_data.extend(memory_batch)
                     # scores, loss = feed_samples(inner_model, memory_batch, loss_function, relation_numbers, device)
                     # optimizer.step()
-                    memory_index = (memory_index+1) % len(memory_data)
+                    # memory_index = (memory_index+1) % len(memory_data)
 
 
                 # random.shuffle(batch_train_data)
@@ -427,6 +488,7 @@ def main(opt):
                         # curriculum_instance_list = remove_unseen_relation(curriculum_instance_list, seen_relations)
                         scores, loss = feed_samples(inner_model, instance_list, loss_function, relation_numbers, device)
                         optimizer.step()
+
 
                 scores, loss = feed_samples(inner_model, batch_train_data, loss_function, relation_numbers, device)
                 optimizer.step()
@@ -492,7 +554,7 @@ def main(opt):
         if opt.memory_select_method == 'select_for_relation':
             # 每个关系sample k个
             for rel in train_relations:
-                rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations)
+                rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations, dataset=opt.dataset)
                 rel_memo = select_data(inner_model, rel_items, int(opt.sampled_instance_num),
                                        relation_numbers, opt.batch_size, device)
                 rel2instance_memory[rel] = rel_memo
@@ -501,7 +563,7 @@ def main(opt):
             # 为每个task sample k个
             rel_instance_num = math.ceil(opt.sampled_instance_num_total / len(train_relations))
             for rel in train_relations:
-                rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations)
+                rel_items = remove_unseen_relation(train_data_dict[rel], seen_relations, dataset=opt.dataset)
                 rel_memo = select_data(inner_model, rel_items, rel_instance_num,
                                        relation_numbers, opt.batch_size, device)
                 rel2instance_memory[rel] = rel_memo
@@ -526,16 +588,16 @@ def main(opt):
         print('avg_acc: %.3f, whole_acc: %.3f' % (avg_result, whole_result))
 
         # end of each task, get embeddings of all
-        if len(all_seen_relations) > 1:
-            rel_embed = tsne_relations(inner_model, seen_task_relations, relation_numbers, device, task_sequence[opt.sequence_index])
-            rel_embeddings.append(rel_embed)
+        # if len(all_seen_relations) > 1:
+        #     rel_embed = tsne_relations(inner_model, seen_task_relations, relation_numbers, device, task_sequence[opt.sequence_index])
+        #     rel_embeddings.append(rel_embed)
 
 
     print('test_all:')
     for epoch in range(10):
         current_test_data = []
         for previous_task_id in range(opt.task_num):
-            current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations))
+            current_test_data.append(remove_unseen_relation(split_test_data[previous_task_id], seen_relations, dataset=opt.dataset))
 
         loss_function = nn.MarginRankingLoss(opt.loss_margin)
         optimizer = optim.Adam(inner_model.parameters(), lr=opt.learning_rate)
@@ -552,9 +614,9 @@ def main(opt):
         print('test_set_size: [%s]' % ', '.join([str(size) for size in test_set_size]))
         print('avg_acc: %.3f, whole_acc: %.3f' % (avg_result, whole_result))
 
-    with open('./results/mllre_rel_embeddings_offset8.pkl', 'wb') as f:
-        dump_tuple = (rel_embeddings, seen_task_relations, task_sequence[opt.sequence_index])
-        pickle.dump(dump_tuple, f)
+    # with open('./results/mllre_rel_embeddings_offset8.pkl', 'wb') as f:
+    #     dump_tuple = (rel_embeddings, seen_task_relations, task_sequence[opt.sequence_index])
+    #     pickle.dump(dump_tuple, f)
 
 
 
@@ -575,6 +637,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--cuda_id', default=0, type=int,
                         help='cuda device index, -1 means use cpu')
+
+    parser.add_argument('--dataset', default='fewrel',
+                        help='use which dataset')
     parser.add_argument('--train_file', default='dataset/training_data_with_entity.txt',
                         help='train file')
     parser.add_argument('--valid_file', default='dataset/val_data_with_entity.txt',
@@ -583,6 +648,17 @@ if __name__ == '__main__':
                         help='test file')
     parser.add_argument('--relation_file', default='dataset/relation_name.txt',
                         help='relation name file')
+    # parser.add_argument('--dataset', default='simpleQuestion',
+    #                     help='use which dataset')
+    # parser.add_argument('--train_file', default='dataset/train_replace_ne.withpool',
+    #                     help='train file')
+    # parser.add_argument('--valid_file', default='dataset/valid_replace_ne.withpool',
+    #                     help='valid file')
+    # parser.add_argument('--test_file', default='dataset/test_replace_ne.withpool',
+    #                     help='test file')
+    # parser.add_argument('--relation_file', default='dataset/relation.2M.list',
+    #                     help='relation name file')
+
     parser.add_argument('--glove_file', default='dataset/glove.6B.300d.txt',
                         help='glove embedding file')
     parser.add_argument('--embedding_dim', default=300, type=int,
@@ -601,7 +677,9 @@ if __name__ == '__main__':
                         help='Reptile inner loop batch size')
     parser.add_argument('--task_num', default=10, type=int,
                         help='number of tasks')
-    parser.add_argument('--train_instance_num', default=100, type=int,
+    # parser.add_argument('--task_num', default=20, type=int,
+    #                     help='number of tasks')
+    parser.add_argument('--train_instance_num', default=200, type=int,
                         help='number of instances for one relation, -1 means all.')
     parser.add_argument('--loss_margin', default=0.5, type=float,
                         help='loss margin setting')
@@ -613,13 +691,13 @@ if __name__ == '__main__':
                         help='step size Epsilon')
     parser.add_argument('--outer_step_formula', default='fixed', type=str,
                         help='outer step formula, fixed, linear, square_root')
-    parser.add_argument('--learning_rate', default=2e-3, type=float,
+    parser.add_argument('--learning_rate', default=1e-3, type=float,
                         help='learning rate')
     parser.add_argument('--random_seed', default=100, type=int,
                         help='random seed')
     parser.add_argument('--task_memory_size', default=50, type=int,
                         help='number of samples for each task')
-    parser.add_argument('--memory_select_method', default='select_for_relation',
+    parser.add_argument('--memory_select_method', default='vec_cluster',
                         help='the method of sample memory data, e.g. vec_cluster, random, difficulty, select_for_relation, select_for_task')
     parser.add_argument('--is_curriculum_train', default='Y',
                         help='when training with memory, this will control if relations are curriculumly sampled.')
@@ -633,66 +711,73 @@ if __name__ == '__main__':
                         help='instance sampled number for a sampled relation, total sampled 6 * 80 instances ')
     parser.add_argument('--sampled_instance_num_total', default=50,
                         help='instance sampled number for a task, total sampled 50 instances ')
+    parser.add_argument('--similarity', default='glove_similarity',
+                        help='the similarity calculate method, kl_similarity, glove_similarity')
     parser.add_argument('--kl_dist_file', default='dataset/kl_dist_ht.json',
                         help='glove embedding file')
+    parser.add_argument('--random_idx', default=False, type=bool,
+                        help='if corrupt task sequence')
+    parser.add_argument('--random_times', default=1, type=int,
+                        help='randomly corrupt task sequence times')
     parser.add_argument('--index', default=1, type=int,
                         help='experiment index')
-    parser.add_argument('--sequence_index', default=8, type=int,
+    parser.add_argument('--sequence_index', default=0, type=int,
                         help='sequence index of tasks')
 
     opt = parser.parse_args()
-    if opt.index == 1:
-        # MLLRE
-        opt.memory_select_method = 'vec_cluster'
-        opt.task_memory_size = 50
 
-    if opt.index == 2:
-        opt.memory_select_method = 'select_for_task'
-        opt.is_curriculum_train = 'N'
-        opt.mini_batch_split = 'N'
-        opt.checkpoint_dir = './checkpoint/2'
+    # if opt.index == 1:
+    #     # MLLRE
+    #     opt.memory_select_method = 'vec_cluster'
+    #     opt.task_memory_size = 50
     #
-    if opt.index == 3:
-        opt.memory_select_method = 'select_for_task'
-        opt.is_curriculum_train = 'N'
-        opt.mini_batch_split = 'Y'
-        opt.checkpoint_dir = './checkpoint/3'
+    # if opt.index == 2:
+    #     opt.memory_select_method = 'select_for_task'
+    #     opt.is_curriculum_train = 'N'
+    #     opt.mini_batch_split = 'N'
+    #     opt.checkpoint_dir = './checkpoint/2'
+    # #
+    # if opt.index == 3:
+    #     opt.memory_select_method = 'select_for_task'
+    #     opt.is_curriculum_train = 'N'
+    #     opt.mini_batch_split = 'Y'
+    #     opt.checkpoint_dir = './checkpoint/3'
+    # #
+    # if opt.index == 4:
+    #     opt.memory_select_method = 'select_for_task'
+    #     opt.is_curriculum_train = 'Y'
+    #     opt.mini_batch_split = 'N'
+    #     opt.checkpoint_dir = './checkpoint/4'
+    # #
+    # if opt.index == 5:
+    #     opt.memory_select_method = 'select_for_task'
+    #     opt.is_curriculum_train = 'Y'
+    #     opt.mini_batch_split = 'Y'
+    #     opt.checkpoint_dir = './checkpoint/5'
+    # #
+    # if opt.index == 6:
+    #     opt.cuda_id = 1
+    #     opt.memory_select_method = 'select_for_relation'
+    #     opt.is_curriculum_train = 'N'
+    #     opt.mini_batch_split = 'N'
+    #     opt.checkpoint_dir = './checkpoint/6'
+    # #
+    # if opt.index == 7:
+    #     opt.memory_select_method = 'select_for_relation'
+    #     opt.is_curriculum_train = 'N'
+    #     opt.mini_batch_split = 'Y'
+    #     opt.checkpoint_dir = './checkpoint/7'
+    # #
+    # if opt.index == 8:
+    #     opt.memory_select_method = 'select_for_relation'
+    #     opt.is_curriculum_train = 'Y'
+    #     opt.mini_batch_split = 'N'
+    #     opt.checkpoint_dir = './checkpoint/8'
+    # #
+    # if opt.index == 9:
+    #     opt.memory_select_method = 'select_for_relation'
+    #     opt.is_curriculum_train = 'Y'
+    #     opt.mini_batch_split = 'Y'
+    #     opt.checkpoint_dir = './checkpoint/9'
     #
-    if opt.index == 4:
-        opt.memory_select_method = 'select_for_task'
-        opt.is_curriculum_train = 'Y'
-        opt.mini_batch_split = 'N'
-        opt.checkpoint_dir = './checkpoint/4'
-    #
-    if opt.index == 5:
-        opt.memory_select_method = 'select_for_task'
-        opt.is_curriculum_train = 'Y'
-        opt.mini_batch_split = 'Y'
-        opt.checkpoint_dir = './checkpoint/5'
-    #
-    if opt.index == 6:
-        opt.cuda_id = 1
-        opt.memory_select_method = 'select_for_relation'
-        opt.is_curriculum_train = 'N'
-        opt.mini_batch_split = 'N'
-        opt.checkpoint_dir = './checkpoint/6'
-    #
-    if opt.index == 7:
-        opt.memory_select_method = 'select_for_relation'
-        opt.is_curriculum_train = 'N'
-        opt.mini_batch_split = 'Y'
-        opt.checkpoint_dir = './checkpoint/7'
-    #
-    if opt.index == 8:
-        opt.memory_select_method = 'select_for_relation'
-        opt.is_curriculum_train = 'Y'
-        opt.mini_batch_split = 'N'
-        opt.checkpoint_dir = './checkpoint/8'
-    #
-    if opt.index == 9:
-        opt.memory_select_method = 'select_for_relation'
-        opt.is_curriculum_train = 'Y'
-        opt.mini_batch_split = 'Y'
-        opt.checkpoint_dir = './checkpoint/9'
-
     main(opt)
